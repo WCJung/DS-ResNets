@@ -4,6 +4,10 @@ import numba
 
 
 def minkovski(input1, input2, p):
+    if not isinstance(input1, torch.Tensor):
+        input1 = torch.from_numpy(np.array(input1))
+    if not isinstance(input2, torch.Tensor):
+        input2 = torch.from_numpy(np.array(input2))
     tmp = torch.pow(torch.abs(input1 - input2), p)
     tmp = torch.sum(tmp, dim=-1)
 
@@ -27,4 +31,8 @@ def chebychev(input1, input2):
     res = np.max(np.abs(input1 - input2), axis=-1)
 
     return res
+
+
+def hausdorff_distance(input1, input2):
+    raise NotImplementedError("hausdorff_distance is not yet implemented")
 

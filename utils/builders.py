@@ -6,45 +6,90 @@ import numpy as np
 import os
 
 
-def seq_builder(raw, d_name, model, n_blocks):
-    out = [None, None, None, None]  # target, series, labels, sequence element distance
-    # (concat(pick<rows, blocks, probs>), concat(temp<rows, blocks, probs>), concat(temp_seqs<rows, seq_length>))
+def seq_builder(raw, d_name, model, n_blocks, labels=None, allow_cross_class=False):
+    """nearest-neighbor 체인(pseudo-orbit) 생성.
+
+    Parameters
+    ----------
+    labels : array-like, optional
+        각 샘플의 클래스 레이블. None이면 클래스 무시.
+    allow_cross_class : bool
+        False (기본) : 같은 클래스 내에서만 이웃 탐색
+        True         : 클래스 무관하게 탐색 (어디서 클래스가 섞이는지 관찰용)
+
+    Output (out 리스트)
+    -------------------
+    out[0] Targets   (N, n_blocks, feat_dim)  – 각 샘플의 원본 블록 특징
+    out[1] Series    (N, n_blocks+1, feat_dim) – 체인의 block-0 특징 시퀀스
+    out[2] SeqInfo   (N, n_blocks+1)           – 체인에 포함된 샘플 인덱스
+    out[3] MaxList   (N, n_blocks)             – 체인 각 단계의 거리
+    out[4] ClassInfo (N, n_blocks+1)           – 체인 각 단계의 클래스 (labels 제공 시)
+    """
+    out = [None, None, None, None, None]
+
     raw = softmax(raw)
+
+    if labels is not None:
+        labels_np = labels.numpy() if hasattr(labels, 'numpy') else np.array(labels)
+    else:
+        labels_np = None
+
     for idx, rows in enumerate(raw):
-        temp_seqs = [idx]
         pick = rows
-        raw_ = raw.copy()
-        raw_[idx] = -1
+        current_class = int(labels_np[idx]) if labels_np is not None else None
+
+        # valid_mask: True = 이웃 후보로 사용 가능
+        valid_mask = np.ones(len(raw), dtype=bool)
+        valid_mask[idx] = False                           # 자기 자신 제외
+        if labels_np is not None and not allow_cross_class:
+            valid_mask[labels_np != current_class] = False  # 다른 클래스 제외
+
         if out[0] is None:
             out[0] = pick.reshape(1, pick.shape[0], pick.shape[1])
         else:
             out[0] = np.concatenate((out[0], pick.reshape(1, pick.shape[0], pick.shape[1])), 0)
-        temp = pick[0].reshape(1, 1, -1)
-        maxd = []
-        for count in range(n_blocks):
-            dist = minkovski(pick[1].reshape(1, 1, -1), raw_[:, 0, :], 2)
-            loc = np.argmin(dist)
+
+        temp        = pick[0].reshape(1, 1, -1)
+        temp_seqs   = [idx]
+        temp_classes = [current_class] if labels_np is not None else []
+        maxd        = []
+
+        for _ in range(n_blocks):
+            valid_indices = np.where(valid_mask)[0]
+            raw_valid     = raw[valid_indices, 0, :]          # (n_valid, feat_dim)
+
+            dist      = minkovski(pick[1].reshape(1, 1, -1), raw_valid, 2)
+            dist_np   = dist.detach().numpy() if hasattr(dist, 'detach') else np.array(dist)
+            local_loc = int(np.argmin(dist_np))
+            loc       = int(valid_indices[local_loc])
+
             temp = np.concatenate((temp, raw[loc, 0].copy().reshape(1, 1, -1)), 1)
-            if len(maxd) == 0:
-                maxd.append(dist[:, loc])
-            else:
-                maxd.append(dist[:, loc])
+            maxd.append(float(dist_np.flatten()[local_loc]))
             temp_seqs.append(loc)
-            raw_[loc] = -1
+            if labels_np is not None:
+                temp_classes.append(int(labels_np[loc]))
+            valid_mask[loc] = False   # 방문한 샘플 제외
             pick = raw[loc]
+
         if out[1] is None:
             out[1] = temp
             out[2] = np.array(temp_seqs).reshape(1, -1)
             out[3] = np.array(maxd).reshape(1, -1)
+            if labels_np is not None:
+                out[4] = np.array(temp_classes).reshape(1, -1)
         else:
             out[1] = np.concatenate((out[1], temp), 0)
             out[2] = np.concatenate((out[2], np.array(temp_seqs).reshape(1, -1)), 0)
             out[3] = np.concatenate((out[3], np.array(maxd).reshape(1, -1)), 0)
-    # if not os.path.exists(f"task2/{d_name}_{model}_Targets.npy"):
-    np.save(f"task2/{d_name}_{model}_Targets.npy", out[0])
-    np.save(f"task2/{d_name}_{model}_Series.npy", out[1])
-    np.save(f"task2/{d_name}_{model}_SeqInfo.npy", out[2])
-    np.save(f"task2/{d_name}_{model}_MaxList.npy", out[3])
+            if labels_np is not None:
+                out[4] = np.concatenate((out[4], np.array(temp_classes).reshape(1, -1)), 0)
+
+    np.save(f"task2/{d_name}_{model}_Targets.npy",  out[0])
+    np.save(f"task2/{d_name}_{model}_Series.npy",   out[1])
+    np.save(f"task2/{d_name}_{model}_SeqInfo.npy",  out[2])
+    np.save(f"task2/{d_name}_{model}_MaxList.npy",  out[3])
+    if labels_np is not None and out[4] is not None:
+        np.save(f"task2/{d_name}_{model}_ClassInfo.npy", out[4])
 
     return out
 

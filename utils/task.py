@@ -8,6 +8,8 @@ import torch
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 class DistanceMeasure:
     def __init__(self, data, labels, norm=None):
         super(DistanceMeasure, self).__init__()
@@ -59,9 +61,9 @@ class DistanceMeasure:
                         #     continue
                         ttt = self.input_dict[key].clone()
                         ttt[:i+1] *= 10
-                        tps = minkovski(ttt, self.input_dict[key2][i], 2).to("cuda")
+                        tps = minkovski(ttt, self.input_dict[key2][i], 2).to(DEVICE)
                     else:
-                        tps = minkovski(self.input_dict[key], self.input_dict[key2][i], 2).to("cuda")
+                        tps = minkovski(self.input_dict[key], self.input_dict[key2][i], 2).to(DEVICE)
                    
                     if i == 0:
                         tmp = tps.reshape(1, 1, tps.shape[1], tps.shape[0])
@@ -92,29 +94,61 @@ class DistanceMeasure:
             tmp_ = None
 
 
-def task_2(seq_set, d_name, path='Result', log=False):
+def task_2(seq_set, d_name, path='Result', log=False, labels=None, allow_cross_class=False):
+    """각 target에 대해 가장 가까운 pseudo-orbit(series)을 탐색.
+
+    Parameters
+    ----------
+    labels : array-like, optional
+        각 샘플의 클래스 레이블.
+    allow_cross_class : bool
+        False (기본) : 같은 클래스의 series만 비교 (true orbit도 동일 클래스)
+        True         : 클래스 무관하게 전체 series 비교
+    """
     path_ = os.path.join(path, "task2")
     if not os.path.exists(path_):
         os.makedirs(path_)
 
+    if labels is not None:
+        labels_np = labels.numpy() if hasattr(labels, 'numpy') else np.array(labels)
+    else:
+        labels_np = None
+
     best_stack = []
     best_stack_mean = []
     count = 0
-    for star in seq_set[0]:
-        print(star.shape, seq_set[1].shape)
-        distance = minkovski(star.reshape(1, star.shape[0], star.shape[1]), seq_set[1], 2)
-        max_dist = np.min(distance, axis=1)
-        mean_dist = np.mean(distance, axis=1)
-        max_loc = np.argmin(max_dist)
-        max_mean_loc = np.argmin(mean_dist)
-        best_stack.append([max_loc, max_dist[max_loc]])
-        best_stack_mean.append([max_mean_loc, mean_dist[max_mean_loc]])
+    for i, star in enumerate(seq_set[0]):
+        if labels_np is not None and not allow_cross_class:
+            # 같은 클래스의 series만 비교
+            current_class  = labels_np[i]
+            same_cls_mask  = labels_np == current_class
+            valid_series   = seq_set[1][same_cls_mask, 1:, :]
+            valid_indices  = np.where(same_cls_mask)[0]
+        else:
+            valid_series  = seq_set[1][:, 1:, :]
+            valid_indices = np.arange(len(seq_set[1]))
+
+        distance = minkovski(
+            star.reshape(1, star.shape[0], star.shape[1]),
+            valid_series, 2
+        ).detach().numpy()
+
+        max_dist       = np.min(distance, axis=1)
+        mean_dist      = np.mean(distance, axis=1)
+        local_max_loc  = np.argmin(max_dist)
+        local_mean_loc = np.argmin(mean_dist)
+        max_loc        = valid_indices[local_max_loc]
+        max_mean_loc   = valid_indices[local_mean_loc]
+
+        best_stack.append([max_loc, max_dist[local_max_loc]])
+        best_stack_mean.append([max_mean_loc, mean_dist[local_mean_loc]])
         count += 1
         if count % 1000 == 0 and log:
-            print(count/seq_set[0].shape[0])
-    best_stack = np.array(best_stack, dtype=object)
+            print(count / seq_set[0].shape[0])
+
+    best_stack      = np.array(best_stack, dtype=object)
     best_stack_mean = np.array(best_stack_mean, dtype=object)
-    np.save(f"{path_}/{d_name}_best_", best_stack)
+    np.save(f"{path_}/{d_name}_best_",    best_stack)
     np.save(f"{path_}/{d_name}_best_mean", best_stack_mean)
 
     return best_stack, best_stack_mean

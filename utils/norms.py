@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import torch
 
 
 def norm(data):
@@ -18,6 +19,12 @@ def sigmoid(d):
     tmp = np.exp(d)
     tmp = tmp/(1 + tmp)
     return tmp
+
+
+def init_random(seed=42):
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def harm_mean(d, axis=None):

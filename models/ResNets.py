@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 from torchvision.transforms._presets import ImageClassification
 from torchvision.utils import _log_api_usage_once
 from torchvision.models._api import Weights, WeightsEnum
@@ -28,7 +30,9 @@ class Clipper:
         (b, c, h, w) = input_data.shape
         h_size = int(h / self.h_split)
         w_size = int(w / self.w_split)
-        new_shape = torch.zeros((b, c * channel_amp, h_size, w_size), dtype=input_data.dtype)
+        # device=input_data.device: GPU 텐서로 직접 생성 (CPU ↔ GPU 전송 제거)
+        new_shape = torch.zeros((b, c * channel_amp, h_size, w_size),
+                                dtype=input_data.dtype, device=input_data.device)
         for h_cur in range(self.h_split):
             for w_cur in range(self.w_split):
                 hc = h_size * h_cur
@@ -175,6 +179,8 @@ class ResNet(nn.Module):
         width_per_group: int = 64,
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        use_avgpool: bool = False,
+        use_50176:   bool = False,
     ) -> None:
         super().__init__()
         _log_api_usage_once(self)
@@ -182,11 +188,19 @@ class ResNet(nn.Module):
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
 
+        # use_50176=True  : layer4(2048,7,14) → dim_reducer(Conv2d 2048→512) → flatten 50,176
+        #                   X = R^50176 = MNIST 입력공간 (1ch×224×224), 동력계 원형
+        #                   Lip(g) = σ_max(W_fc) · Lip(dim_reducer)
+        # use_avgpool=True : layer4 → AdaptiveAvgPool(1,1) → flatten 2,048
+        #                   Lip(g) = σ_max(W_fc) · (1/√98), g가 수축적 → 하한 tight
+        # (둘 다 False)    : spatial 그대로 flatten 200,704
+        #                   Lip(g) = σ_max(W_fc),  X = R^200704
+        self.use_avgpool = use_avgpool
+        self.use_50176   = use_50176
+
         self.inplanes = 64
         self.dilation = 1
         if replace_stride_with_dilation is None:
-            # each element in the tuple indicates if we should replace
-            # the 2x2 stride with a dilated convolution instead
             replace_stride_with_dilation = [False, False, False]
         if len(replace_stride_with_dilation) != 3:
             raise ValueError(
@@ -204,7 +218,17 @@ class ResNet(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], groups=16, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], groups=32, dilate=replace_stride_with_dilation[2])
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        if use_50176:
+            # 채널 압축 2048→512 (학습됨); 7×14 spatial은 보존 → 512×7×14 = 50,176
+            self.dim_reducer = nn.Conv2d(512 * block.expansion, 512, 1, bias=False)
+            fc_in_features   = 512 * 7 * 14                  # 50,176
+        elif use_avgpool:
+            fc_in_features = 512 * block.expansion          # 2,048
+        else:
+            fc_in_features = 512 * block.expansion * 7 * 14  # 200,704
+        self.fc = nn.Linear(fc_in_features, num_classes)
+
         self.clip1 = Clipper(2, 2)
         self.clip2 = Clipper(2, 1)
         self.clip3 = Clipper(1, 2)
@@ -266,22 +290,24 @@ class ResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _forward_impl(self, x: Tensor) -> Tensor:
-        # See note [TorchScript super()]
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-        x = self.clip1(x).to("cuda")
+        x = self.clip1(x).to(DEVICE)
         x = self.layer1(x)
-        x = self.clip2(x).to("cuda")
+        x = self.clip2(x).to(DEVICE)
         x = self.layer2(x)
-        x = self.clip3(x).to("cuda")
+        x = self.clip3(x).to(DEVICE)
         x = self.layer3(x)
-        x = self.clip2(x).to("cuda")
+        x = self.clip2(x).to(DEVICE)
         x = self.layer4(x)
-        x = torch.flatten(x, 1)
+        if self.use_50176:
+            x = self.dim_reducer(x)  # (B, 2048, 7, 14) → (B, 512, 7, 14)
+        elif self.use_avgpool:
+            x = self.avgpool(x)      # (B, 2048, 7, 14) → (B, 2048, 1, 1)
+        x = torch.flatten(x, 1)      # (B, 50176) or (B, 2048) or (B, 200704)
         x = self.fc(x)
-
         return x
 
     def forward(self, x: Tensor) -> Tensor:

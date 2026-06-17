@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Model checkpoints & feature files (too large for GitHub)
+*.pt
+*.pth
+*.ckpt
+
+# Dataset downloads
+data/
+
+# Experiment outputs (generated locally, not source code)
+prob/
+prob_fc/
+pix/
+Result/
+task2/
+logs/
+
+# Temp files
+*.tmp.*
+.DS_Store
