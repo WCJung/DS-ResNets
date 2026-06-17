@@ -1,5 +1,5 @@
 # DS-ResNets
-Dynamic System for ResNets — feature extraction and dynamical-systems analysis on modified ResNet architectures.
+The theory of Dynamical System for ResNets(DS-ResNets) — Explainability on modified ResNet architectures from dynamical systems perspectives.
 
 ## Install
 
@@ -32,7 +32,8 @@ Outputs written to `prob/`, `prob_fc/`, `pix/`.
 
 ### 2. Distance Analysis
 
-Computes inter/intra-class Minkowski distances (task 1), builds pseudo-orbit chains (task 2), derives the expansive constant ε and the theorem lower bound Tg(φ) ≥ Shg(φ)/Lip(g).
+Computes inter/intra-class Minkowski distances, derives the expansive constant.
+We build pseudo-orbit and compute the shadowing constant. By the main theorem we can get lower bound of topological stability constant from Shg(φ)/Lip(g) ≤ Tg(φ).
 
 ```bash
 python dist_calc.py
