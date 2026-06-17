@@ -84,6 +84,7 @@ def seq_builder(raw, d_name, model, n_blocks, labels=None, allow_cross_class=Fal
             if labels_np is not None:
                 out[4] = np.concatenate((out[4], np.array(temp_classes).reshape(1, -1)), 0)
 
+    os.makedirs("task2", exist_ok=True)
     np.save(f"task2/{d_name}_{model}_Targets.npy",  out[0])
     np.save(f"task2/{d_name}_{model}_Series.npy",   out[1])
     np.save(f"task2/{d_name}_{model}_SeqInfo.npy",  out[2])

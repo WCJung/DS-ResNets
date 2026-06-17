@@ -100,7 +100,7 @@ if __name__ == '__main__':
     # ── (이하 DS-ResNet 전용) 블록 단위 특징 추출 / 거리 분석 파이프라인 ──────
     extractor = Exprob(2048 * 7 * 14, n_class, layers=ds_layers,
                        multi_fc=USE_BLOCK_FC, use_avgpool=USE_AVGPOOL)
-    extractor.load_state_dict(torch.load(f"{ckpt_name}.pt"), strict=False)
+    extractor.load_state_dict(torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
     extractor.eval()
 
@@ -145,7 +145,7 @@ if __name__ == '__main__':
         print(f"fc 출력 저장 완료: {fc_dir}/")
 
     # ── 라벨 및 청크 저장 ─────────────────────────────────────────────────
-    extractor.load_state_dict(torch.load(f"{ckpt_name}.pt"), strict=False)
+    extractor.load_state_dict(torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
     extractor.eval()
     yout = None
