@@ -22,3 +22,6 @@ logs/
 # Temp files
 *.tmp.*
 .DS_Store
+
+# Claude Code internal files
+CLAUDE.md
