@@ -1,6 +1,5 @@
 import numpy as np
 import torch
-import numba
 
 
 def minkovski(input1, input2, p):
