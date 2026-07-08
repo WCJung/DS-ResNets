@@ -1,12 +1,28 @@
 # DS-ResNets
 
 The theory of Dynamical Systems for ResNets (DS-ResNets) — quantifying the
-**topological stability** of trained ResNets (g-expansivity, g-shadowing,
-topological g-stability) on dimension-preserving ResNet variants.
+**topological stability** (g-expansivity, g-shadowing, topological
+g-stability) and **topological entropy** (FTTE) of trained ResNets on
+dimension-preserving ResNet variants.
 
-All stability quantities are computed in the pseudometric
+All quantities are computed in the pseudometric
 **d_g(x, y) = d(g(x), g(y))** — the observation space of the block-wise
 classifiers g — matching the definitions in the paper.
+
+### Dimension-preserving models
+
+Every residual block acts on a common phase space (flattened dim 200,704 —
+the Clipper reshapes are coordinate permutations, hence l2-isometries).
+The block *interior* is free; three families are provided:
+
+| Name | Block | Idea |
+|---|---|---|
+| `ds_resnet18` / `ds_resnet50` | `Bottleneck` | grouped bottleneck (baseline) |
+| `ds_wide18` / `ds_wide50` | `WideBottleneck` | Wide-ResNet: 2× bottleneck width + dropout, **pre-activation** (`φ(x) = x + F(x)` exactly) |
+| `ds_resnext18` / `ds_resnext50` | `ResNeXtBottleneck` | ResNeXt: cardinality-32 aggregated transforms |
+
+`*18` = 8 blocks, `*50` = 16 blocks. The registry lives in
+`models/models.py` (`DS_MODELS`).
 
 ## Install
 
@@ -29,7 +45,7 @@ python main.py --model resnet18   --data MNIST     # accuracy baseline only
 
 | Option | Default | Description |
 |---|---|---|
-| `--model` | `ds_resnet18` | `ds_resnet18` (8 blocks) / `ds_resnet50` (16) / `resnet18` / `resnet50` |
+| `--model` | `ds_resnet18` | any name in `DS_MODELS` (table above) / `resnet18` / `resnet50` |
 | `--data` | `MNIST` | `MNIST` / `CIFAR10` / `IMAGENET10` (Imagenette) |
 | `--use-block-fc / --no-use-block-fc` | on | train per-block linear probes (required for analysis) |
 | `--use-avgpool / --no-use-avgpool` | on | avgpool before the main fc |
@@ -80,7 +96,30 @@ Outputs: `Result/{data}_{model}_epsilon.npy`, `_shadowing.npy`, `_theorem.npy`,
 
 ---
 
-### 3. Inspect Examples — `inspect_examples.py`
+### 3. Entropy (FTTE) — `entropy_calc.py`
+
+Computes the finite-time trajectory entropy in the same d_g space, using the
+trajectory pseudometric `d_g^T(x,y) = max_t d(g_t(φ^t x), g_t(φ^t y))`:
+
+1. **Proposition 1 diagnostics** — `intra_max` (largest within-class d_g^T),
+   `cross_min` (smallest cross-class d_g^T, which equals the g-expansive
+   constant), and the ε-window `[intra_max, cross_min)` on which `s_T = m`
+   (hence `Δh_T = 0`) is guaranteed.
+2. **FTTE grid** — for each ε (auto quantile grid, or `--eps 0.05,0.1,...`):
+   `s_T(ε)` via greedy maximal (T, ε)-separated packing (a lower bound of the
+   NP-hard maximum), `h_T(ε) = log(s_T)/T`, and the FTTE gap
+   `Δh_T(ε) = h_T(ε) − log(m)/T` with its Proposition-2 sign (`s` vs `m`).
+
+```bash
+python entropy_calc.py --model ds_resnet18 --data MNIST
+python entropy_calc.py --model ds_wide50 --data CIFAR10 --device cuda
+```
+
+Outputs: `Result/{data}_{model}_entropy.npy`.
+
+---
+
+### 4. Inspect Examples — `inspect_examples.py`
 
 Selects and visualises concrete instability examples:
 
@@ -99,9 +138,10 @@ Output PNGs saved to `Result/inspect/`.
 
 ### All combinations — `run_all.py`
 
-Runs 4 models × 3 datasets sequentially (train → extract → analysis) with
-logging to `logs/`. `print_results.py` prints the aggregated Table 1 and saves
-example images.
+Runs all models × 3 datasets sequentially (train → extract → stability →
+entropy) with logging to `logs/`. Trim `MODELS` in the config block if you
+don't need all 8. `print_results.py` prints the aggregated Table 1
+(including `h_T` / `Δh_T` columns) and saves example images.
 
 ```bash
 python run_all.py
@@ -121,11 +161,13 @@ python test_pipeline.py
 ## Code Map
 
 ```
-models/ResNets.py      dimension-preserving ResNet (Clipper = isometric reshape)
-models/models.py       build_ds_resnet()
+models/ResNets.py      dimension-preserving ResNet skeleton (Clipper = isometric reshape)
+models/blocks.py       WideBottleneck / ResNeXtBottleneck (φ: R^n → R^n variants)
+models/models.py       DS_MODELS registry + build_ds_model()
 utils/trajectory.py    (N, T, D) trajectory loader in the d_g space
 utils/expansive.py     g-expansive constant (min-max, vectorised torch.cdist)
 utils/shadowing.py     pseudo-orbits, true-orbit tracing, Sh_g estimator
+utils/entropy.py       FTTE: separated sets, h_T, Δh_T, Prop.1 diagnostics
 utils/lipschitz.py     Lip(g) from checkpoint state_dict (spectral norms)
 utils/orbit_analysis.py  example selection for inspect/print scripts
 utils/stubs.py         data loading, train/evaluate, block-output extraction
@@ -138,5 +180,5 @@ prob/          raw per-block features   (N, 200704) per block
 prob_fc/       per-block fc logits      (N, n_class) per block
 pix/           test labels
 task2/         SeqInfo, MaxList, ClassInfo, TraceEps (pseudo-orbit chains)
-Result/        metrics, epsilon, shadowing, theorem, inspect PNGs
+Result/        metrics, epsilon, shadowing, theorem, entropy, inspect PNGs
 ```

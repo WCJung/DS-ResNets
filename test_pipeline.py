@@ -9,10 +9,13 @@
 
 실행: python test_pipeline.py
 """
+import math
+
 import numpy as np
 import torch
 import torch.nn as nn
 
+from utils.entropy import class_scale_diagnostics, ftte_report, separated_set_size
 from utils.expansive import expansive_constant
 from utils.lipschitz import spectral_norm_fc
 from utils.norms import init_random
@@ -74,5 +77,33 @@ ref = float(np.linalg.svd(fc.weight.detach().numpy(), compute_uv=False)[0])
 assert abs(sigma - ref) < 1e-5
 print(f"  sigma_max = {sigma:.4f} (numpy 참조값과 일치)")
 print("[Phase 3] OK\n")
+
+# ── Phase 4: FTTE — separated set / h_T / Δh_T ─────────────────────────
+print("[Phase 4] entropy (FTTE) ...")
+diag = class_scale_diagnostics(traj, labels, chunk=8)
+assert diag["cross_min"] > 0
+# 클래스가 잘 분리된 궤적이므로 Prop.1 창이 존재해야 함
+assert diag["prop1_window"] is not None, "잘 분리된 더미인데 Prop.1 창이 없음"
+a, b = diag["prop1_window"]
+
+# 창 내부 eps → s = m (Proposition 1)
+eps_mid = (a + b) / 2
+s_mid = separated_set_size(traj, eps_mid, chunk=8)
+assert s_mid == n_class, f"Prop.1 창 내부인데 s={s_mid} != m={n_class}"
+
+# 아주 작은 eps → 모든 점이 분리 → s = N
+s_tiny = separated_set_size(traj, 1e-8, chunk=8)
+assert s_tiny == N, f"eps→0인데 s={s_tiny} != N={N}"
+
+rep = ftte_report(traj, labels, eps_list=[1e-8, eps_mid], chunk=8,
+                  verbose=False)
+row_mid = [r for r in rep["rows"] if r["eps"] == eps_mid][0]
+assert row_mid["cmp"] == '=' and abs(row_mid["gap"]) < 1e-12
+assert abs(rep["h_class"] - math.log(n_class) / T) < 1e-12
+print(f"  intra_max={diag['intra_max']:.4f}  cross_min={diag['cross_min']:.4f}"
+      f"  창=[{a:.4f}, {b:.4f})")
+print(f"  s(eps_mid)={s_mid}=m,  s(eps→0)={s_tiny}=N,  "
+      f"Δh(eps_mid)={row_mid['gap']:+.4f}")
+print("[Phase 4] OK\n")
 
 print("=== 전체 파이프라인 스모크 테스트 성공 ===")

@@ -11,6 +11,7 @@ import torch.nn as nn
 import torchvision.models as tv_models
 
 from models.ResNets import ResNet, Bottleneck
+from models.blocks import ResNeXtBottleneck, WideBottleneck
 
 
 # ── 모델 생성 ────────────────────────────────────────────────────────────────
@@ -27,10 +28,11 @@ def make_resnet50(n_class=10):
     return m
 
 
-def make_ds_resnet(n_class=10, layers=None, use_avgpool=False, use_50176=False):
+def make_ds_resnet(n_class=10, layers=None, use_avgpool=False, use_50176=False,
+                   block=Bottleneck):
     if layers is None:
         layers = [3, 4, 6, 3]
-    m = ResNet(block=Bottleneck, layers=layers, num_classes=n_class,
+    m = ResNet(block=block, layers=layers, num_classes=n_class,
                use_avgpool=use_avgpool, use_50176=use_50176)
     return m
 
@@ -117,6 +119,14 @@ if __name__ == '__main__':
         ("DS-ResNet-18(avgpool)",  make_ds_resnet(layers=L8,  use_avgpool=True),  dummy3),
         ("DS-ResNet-50(no pool)",  make_ds_resnet(layers=L16, use_avgpool=False), dummy3),
         ("DS-ResNet-50(avgpool)",  make_ds_resnet(layers=L16, use_avgpool=True),  dummy3),
+        ("DS-Wide-18",             make_ds_resnet(layers=L8,  use_avgpool=True,
+                                                  block=WideBottleneck),          dummy3),
+        ("DS-Wide-50",             make_ds_resnet(layers=L16, use_avgpool=True,
+                                                  block=WideBottleneck),          dummy3),
+        ("DS-ResNeXt-18",          make_ds_resnet(layers=L8,  use_avgpool=True,
+                                                  block=ResNeXtBottleneck),       dummy3),
+        ("DS-ResNeXt-50",          make_ds_resnet(layers=L16, use_avgpool=True,
+                                                  block=ResNeXtBottleneck),       dummy3),
     ]
 
     print("\n[구조 비교] 입력: 3ch × 224 × 224")
@@ -138,6 +148,10 @@ if __name__ == '__main__':
         ("DS-ResNet-18(avgpool)", 8,  make_ds_resnet(layers=L8,  use_avgpool=True),  2048,   "O", "vs R18", "R^{2048}"),
         ("DS-ResNet-50(no pool)", 16, make_ds_resnet(layers=L16, use_avgpool=False), 200704, "X", "vs R50", "R^{200704}"),
         ("DS-ResNet-50(avgpool)", 16, make_ds_resnet(layers=L16, use_avgpool=True),  2048,   "O", "vs R50", "R^{2048}"),
+        ("DS-Wide-50",            16, make_ds_resnet(layers=L16, use_avgpool=True,
+                                                     block=WideBottleneck),          2048,   "O", "WRN",    "R^{2048}"),
+        ("DS-ResNeXt-50",         16, make_ds_resnet(layers=L16, use_avgpool=True,
+                                                     block=ResNeXtBottleneck),       2048,   "O", "ResNeXt","R^{2048}"),
     ]
     print(f"{'모델':<26} {'블록':>5} {'파라미터':>12} {'fc 입력':>10} {'pool':>5} {'비교':>8}  X 공간")
     print("-" * 85)

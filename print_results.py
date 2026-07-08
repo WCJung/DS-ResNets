@@ -32,14 +32,11 @@ from utils.stubs import load_data
 from utils.orbit_analysis import find_expansive_outliers, analyze_pseudo_orbit_stability
 
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-MODELS   = ['resnet18', 'resnet50', 'ds_resnet18', 'ds_resnet50']
-DATASETS = ['MNIST', 'CIFAR10', 'IMAGENET10']
+from models.models import DS_MODELS, ds_layers
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],
-    'ds_resnet50': [3, 4, 6, 3],
-}
+# ── Configuration ─────────────────────────────────────────────────────────────
+MODELS   = ['resnet18', 'resnet50'] + list(DS_MODELS)
+DATASETS = ['MNIST', 'CIFAR10', 'IMAGENET10']
 
 NORM_STATS = {
     'MNIST':      ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
@@ -88,8 +85,12 @@ def _collect(model_name, data_name):
     thm  = _load_npy(f"Result/{tag}_theorem.npy")
     shg  = float(thm["Shg_phi"]) if thm else None
     lip  = float(thm["Lip_g"])   if thm else None
+    ent  = _load_npy(f"Result/{tag}_entropy.npy")
+    rec  = ent["recommended"] if ent and ent.get("recommended") else None
+    hT   = float(rec["h"])   if rec else None
+    gap  = float(rec["gap"]) if rec else None
     return {"f1": f1, "loss": loss, "acc": acc, "eps": eps,
-            "shg": shg, "lip": lip}
+            "shg": shg, "lip": lip, "hT": hT, "gap": gap}
 
 
 def _fmt(val, fmt=".4f", na="—"):
@@ -103,7 +104,8 @@ def print_table():
     print("=" * 78)
 
     col_headers = (f"  {'Model':<14} {'F1':>7} {'Loss':>7} {'Acc(%)':>7}  "
-                   f"{'ε':>10}  {'Shg(φ)':>8}  {'Lip(g)':>8}")
+                   f"{'ε':>10}  {'Shg(φ)':>8}  {'Lip(g)':>8}  "
+                   f"{'hT(ε)':>7}  {'ΔhT':>7}")
     separator   = "  " + "-" * 74
 
     for data_name in DATASETS:
@@ -112,24 +114,28 @@ def print_table():
         print(separator)
         for model_name in MODELS:
             r = _collect(model_name, data_name)
-            if model_name in DS_LAYERS_MAP:
+            if model_name in DS_MODELS:
                 row = (f"  {model_name:<14} {_fmt(r['f1']):>7} "
                        f"{_fmt(r['loss']):>7} {_fmt(r['acc'], '.2f'):>7}  "
                        f"{_fmt(r['eps'], '.3e'):>10}  "
                        f"{_fmt(r['shg']):>8}  "
-                       f"{_fmt(r['lip']):>8}")
+                       f"{_fmt(r['lip']):>8}  "
+                       f"{_fmt(r['hT']):>7}  "
+                       f"{_fmt(r['gap'], '+.4f'):>7}")
             else:
                 row = (f"  {model_name:<14} {_fmt(r['f1']):>7} "
                        f"{_fmt(r['loss']):>7} {_fmt(r['acc'], '.2f'):>7}  "
-                       f"{'—':>10}  {'—':>8}  {'—':>8}")
+                       f"{'—':>10}  {'—':>8}  {'—':>8}  {'—':>7}  {'—':>7}")
             print(row)
 
     print()
-    print("  Columns (DS-ResNet only):")
+    print("  Columns (DS models only):")
     print("    ε      : g-expansive constant (min over cross-class pairs of")
     print("             max over blocks of d_g)")
     print("    Shg(φ) : g-shadowing constant estimate  delta*(eps0) / eps0")
     print("    Lip(g) : max block_fc spectral norm × softmax correction")
+    print("    hT(ε)  : FTTE at the recommended scale (entropy_calc.py)")
+    print("    ΔhT    : FTTE gap  hT(ε) − log(m)/T   (Prop. 2: 부호 = s vs m)")
     print("    topological g-stable — 정리 1  Shg(φ) ≤ Lip(g)·Tg(φ) 에 따라")
     print("                           Tg(φ) ≥ Shg / Lip 로 직접 계산.")
     print("=" * 78)
@@ -242,10 +248,10 @@ def plot_chain(test_dataset, mean, std, info, title, save_path):
 # ── 5. Per-combination image extraction ───────────────────────────────────────
 
 def extract_images(model_name, data_name):
-    if model_name not in DS_LAYERS_MAP:
-        return   # images only for DS-ResNet (block analysis available)
+    if model_name not in DS_MODELS:
+        return   # images only for DS models (block analysis available)
 
-    n_blocks = sum(DS_LAYERS_MAP[model_name])
+    n_blocks = sum(ds_layers(model_name))
     tag      = f"{data_name}_{model_name}"
     out_dir  = os.path.join(OUT_DIR, tag)
 
@@ -320,7 +326,7 @@ if __name__ == '__main__':
     print_table()
 
     # ── 2. Example images (DS-ResNet only) ────────────────────────────────
-    ds_models = [m for m in MODELS if m in DS_LAYERS_MAP]
+    ds_models = [m for m in MODELS if m in DS_MODELS]
     total     = len(ds_models) * len(DATASETS)
     done      = 0
 

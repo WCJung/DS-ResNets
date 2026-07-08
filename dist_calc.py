@@ -28,6 +28,7 @@ import os
 import numpy as np
 import torch
 
+from models.models import DS_MODELS, ds_layers
 from utils.expansive import expansive_constant
 from utils.lipschitz import lip_report_from_checkpoint
 from utils.norms import init_random
@@ -35,16 +36,11 @@ from utils.shadowing import (build_pseudo_orbits, save_orbit_files,
                              shadowing_constant, trace_orbits)
 from utils.trajectory import load_trajectory
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],
-    'ds_resnet50': [3, 4, 6, 3],
-}
-
 
 def parse_args():
     p = argparse.ArgumentParser(description="DS-ResNets 안정성 상수 계산")
     p.add_argument('--model', default='ds_resnet18',
-                   choices=list(DS_LAYERS_MAP))
+                   choices=list(DS_MODELS))
     p.add_argument('--data', default='MNIST',
                    choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
     p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
@@ -193,7 +189,7 @@ if __name__ == '__main__':
     run_analysis(
         data_name=args.data,
         model_tag=args.model,
-        layers=DS_LAYERS_MAP[args.model],
+        layers=ds_layers(args.model),
         space=args.space,
         n_samples=args.n_samples,
         allow_cross_class=args.allow_cross_class,

@@ -31,13 +31,10 @@ from utils.stubs import load_data
 from utils.orbit_analysis import find_expansive_outliers, analyze_pseudo_orbit_stability
 
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],
-    'ds_resnet50': [3, 4, 6, 3],
-}
+from models.models import DS_MODELS, ds_layers
 
 _p = argparse.ArgumentParser(description="Expansive/Shadowing 사례 시각화")
-_p.add_argument('--model', default='ds_resnet18', choices=list(DS_LAYERS_MAP))
+_p.add_argument('--model', default='ds_resnet18', choices=list(DS_MODELS))
 _p.add_argument('--data', default='MNIST',
                 choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
 _args = _p.parse_args()
@@ -51,7 +48,7 @@ MIN_DEPTH_RATIO = 0.5        # [Expansive]: 이 비율 이상 통과한 블록�
 
 OUT_DIR = "Result/inspect"
 
-n_blocks = sum(DS_LAYERS_MAP[MODEL_NAME])
+n_blocks = sum(ds_layers(MODEL_NAME))
 model_tag = MODEL_NAME
 
 # 화면 표시용 역정규화 통계 (utils/stubs.py의 load_data 정규화 값과 동일해야 함)

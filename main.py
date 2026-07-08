@@ -21,22 +21,17 @@ import torch
 import torch.nn as nn
 import torchvision.models as tv_models
 
-from models.models import build_ds_resnet
+from models.models import DS_MODELS, build_ds_model, ds_block, ds_layers
 from utils.norms import init_random
 from utils.stubs import (Exprob, evaluate, extract_block_outputs, load_data,
                          save_block_outputs, save_labels, save_metrics,
                          train, train_block_fc)
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],   #  8 블록 — ResNet-18과 블록 수 동일
-    'ds_resnet50': [3, 4, 6, 3],   # 16 블록 — ResNet-50과 블록 수 동일
-}
-
 
 def parse_args():
     p = argparse.ArgumentParser(description="DS-ResNets 학습 + 블록 출력 추출")
     p.add_argument('--model', default='ds_resnet18',
-                   choices=['ds_resnet18', 'ds_resnet50', 'resnet18', 'resnet50'])
+                   choices=list(DS_MODELS) + ['resnet18', 'resnet50'])
     p.add_argument('--data', default='MNIST',
                    choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
     p.add_argument('--n-class', type=int, default=10)
@@ -53,9 +48,9 @@ def parse_args():
 
 
 def build_model(args):
-    if args.model in DS_LAYERS_MAP:
-        return build_ds_resnet(DS_LAYERS_MAP[args.model], args.n_class,
-                               use_avgpool=args.use_avgpool)
+    if args.model in DS_MODELS:
+        return build_ds_model(args.model, args.n_class,
+                              use_avgpool=args.use_avgpool)
     if args.model == 'resnet18':
         m = tv_models.resnet18(weights=None)
     else:
@@ -67,7 +62,7 @@ def build_model(args):
 if __name__ == '__main__':
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    is_ds = args.model in DS_LAYERS_MAP
+    is_ds = args.model in DS_MODELS
     ckpt_name = f"{args.model}_{args.data}"
 
     init_random(args.seed)
@@ -78,7 +73,7 @@ if __name__ == '__main__':
         test_dataset, batch_size=args.batch_size, shuffle=False)
 
     if is_ds:
-        n_blocks = sum(DS_LAYERS_MAP[args.model])
+        n_blocks = sum(ds_layers(args.model))
         print(f"[설정] {args.model}  |  data={args.data}  |  blocks={n_blocks}"
               f"  |  avgpool={args.use_avgpool}  |  block_fc={args.use_block_fc}")
     else:
@@ -100,10 +95,10 @@ if __name__ == '__main__':
     if not is_ds:
         sys.exit(0)
 
-    # ── DS-ResNet 전용: 블록 단위 출력 추출 ───────────────────────────────
-    ds_layers = DS_LAYERS_MAP[args.model]
-    extractor = Exprob(args.n_class, layers=ds_layers,
-                       multi_fc=args.use_block_fc, use_avgpool=args.use_avgpool)
+    # ── DS 모델 전용: 블록 단위 출력 추출 ─────────────────────────────────
+    extractor = Exprob(args.n_class, layers=ds_layers(args.model),
+                       multi_fc=args.use_block_fc, use_avgpool=args.use_avgpool,
+                       block=ds_block(args.model))
     extractor.load_state_dict(
         torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
@@ -126,5 +121,8 @@ if __name__ == '__main__':
         fc_dir = save_block_outputs(logits, "prob_fc", args.data, args.model)
         print(f"fc logit → {fc_dir}/")
 
-    print("완료. 다음 단계: python dist_calc.py --model", args.model,
-          "--data", args.data)
+    print(f"완료. 다음 단계:")
+    print(f"  python dist_calc.py   --model {args.model} --data {args.data}"
+          f"   # 안정성 (Table 1)")
+    print(f"  python entropy_calc.py --model {args.model} --data {args.data}"
+          f"   # FTTE")

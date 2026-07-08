@@ -29,7 +29,8 @@ import torch.nn as nn
 import torchvision.models as tv_models
 
 from dist_calc import run_analysis
-from models.models import build_ds_resnet
+from entropy_calc import run_entropy
+from models.models import DS_MODELS, build_ds_model, ds_block, ds_layers
 from utils.norms import init_random
 from utils.stubs import (Exprob, evaluate, extract_block_outputs, load_data,
                          save_block_outputs, save_labels, save_metrics,
@@ -37,7 +38,8 @@ from utils.stubs import (Exprob, evaluate, extract_block_outputs, load_data,
 
 
 # ── Experiment configuration ───────────────────────────────────────────────────
-MODELS   = ['resnet18', 'resnet50', 'ds_resnet18', 'ds_resnet50']
+# 필요 시 조합을 줄여서 실행하세요 (8 models x 3 datasets = 24 combos는 무겁습니다).
+MODELS   = ['resnet18', 'resnet50'] + list(DS_MODELS)
 DATASETS = ['MNIST', 'CIFAR10', 'IMAGENET10']
 
 SEED              = 13
@@ -47,16 +49,13 @@ EARLY_STOP        = 20
 LR                = 5e-5
 BATCH_SIZE        = 64
 
-USE_BLOCK_FC      = True      # DS-ResNet: train per-block linear probes
-USE_AVGPOOL       = True      # DS-ResNet: avgpool before main fc
+USE_BLOCK_FC      = True      # DS models: train per-block linear probes
+USE_AVGPOOL       = True      # DS models: avgpool before main fc
 SPACE             = 'prob'    # d_g 관측 공간: softmax 확률 (dist_calc 참조)
 ALLOW_CROSS_CLASS = False     # pseudo-orbit: same-class neighbors only
+RUN_ENTROPY       = True      # 안정성 분석 후 FTTE(entropy_calc)도 실행
 ANALYSIS_DEVICE   = 'cuda' if torch.cuda.is_available() else None
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],   #  8 blocks
-    'ds_resnet50': [3, 4, 6, 3],   # 16 blocks
-}
 LOG_DIR = "logs"
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -109,9 +108,8 @@ class _Tee:
 # ── Step 1: train + extraction ────────────────────────────────────────────────
 
 def _make_model(model_name, device):
-    if model_name in DS_LAYERS_MAP:
-        model = build_ds_resnet(DS_LAYERS_MAP[model_name], N_CLASS,
-                                use_avgpool=USE_AVGPOOL)
+    if model_name in DS_MODELS:
+        model = build_ds_model(model_name, N_CLASS, use_avgpool=USE_AVGPOOL)
     elif model_name == 'resnet18':
         model = tv_models.resnet18(weights=None)
         model.fc = nn.Linear(model.fc.in_features, N_CLASS)
@@ -125,7 +123,7 @@ def _make_model(model_name, device):
 
 def step_train_extract(model_name, data_name, device,
                        train_dataset, test_dataset):
-    is_ds     = model_name in DS_LAYERS_MAP
+    is_ds     = model_name in DS_MODELS
     ckpt_name = f"{model_name}_{data_name}"
 
     num_workers = 4 if sys.platform != 'win32' else 0
@@ -156,10 +154,10 @@ def step_train_extract(model_name, data_name, device,
               "only, no block analysis.")
         return
 
-    # ── DS-ResNet: block outputs ───────────────────────────────────────────
-    ds_layers = DS_LAYERS_MAP[model_name]
-    extractor = Exprob(N_CLASS, layers=ds_layers,
-                       multi_fc=USE_BLOCK_FC, use_avgpool=USE_AVGPOOL)
+    # ── DS models: block outputs ───────────────────────────────────────────
+    extractor = Exprob(N_CLASS, layers=ds_layers(model_name),
+                       multi_fc=USE_BLOCK_FC, use_avgpool=USE_AVGPOOL,
+                       block=ds_block(model_name))
     extractor.load_state_dict(
         torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
@@ -189,7 +187,7 @@ def step_train_extract(model_name, data_name, device,
 # ── Step 2: stability analysis ─────────────────────────────────────────────────
 
 def step_analysis(model_name, data_name):
-    if model_name not in DS_LAYERS_MAP:
+    if model_name not in DS_MODELS:
         return   # standard ResNets skipped
 
     _section("Stability analysis: eps / Sh_g / Lip(g) / Table 1 ...")
@@ -197,13 +195,26 @@ def step_analysis(model_name, data_name):
     run_analysis(
         data_name=data_name,
         model_tag=model_name,
-        layers=DS_LAYERS_MAP[model_name],
+        layers=ds_layers(model_name),
         space=SPACE,
         allow_cross_class=ALLOW_CROSS_CLASS,
         device=ANALYSIS_DEVICE,
         seed=SEED,
     )
     print(f"  [{G}done{RST}] analysis  {fmt_time(time.time() - t0)}")
+
+    if RUN_ENTROPY:
+        _section("FTTE: separated sets / h_T / Δh_T ...")
+        t0 = time.time()
+        run_entropy(
+            data_name=data_name,
+            model_tag=model_name,
+            layers=ds_layers(model_name),
+            space=SPACE,
+            device=ANALYSIS_DEVICE,
+            seed=SEED,
+        )
+        print(f"  [{G}done{RST}] entropy  {fmt_time(time.time() - t0)}")
 
 
 # ── Single combination runner ──────────────────────────────────────────────────
@@ -286,7 +297,7 @@ if __name__ == '__main__':
     print(f"  {'-'*18} {'-'*12} {'-'*8}  {'-'*9}  {'-'*30}")
 
     for (mn, dn), (status, dur, err) in results.items():
-        is_ds = mn in DS_LAYERS_MAP
+        is_ds = mn in DS_MODELS
         sym   = f"{G}OK      {RST}" if status == "OK" else f"{R}FAILED  {RST}"
         note  = "" if status == "OK" else err[:35]
         if status == "OK" and not is_ds:

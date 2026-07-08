@@ -233,10 +233,13 @@ class Exprob(ResNet):
 
     BLOCK_FEAT_DIM = 2048 * 7 * 14   # 200,704 — 224 입력 기준 블록 flatten 차원
 
-    def __init__(self, n_class, layers=None, multi_fc=False, use_avgpool=False):
+    def __init__(self, n_class, layers=None, multi_fc=False, use_avgpool=False,
+                 block=None):
         if layers is None:
             layers = [3, 4, 6, 3]
-        super().__init__(block=Bottleneck, layers=layers, num_classes=n_class,
+        if block is None:
+            block = Bottleneck       # ds_wide/ds_resnext는 해당 블록 클래스 전달
+        super().__init__(block=block, layers=layers, num_classes=n_class,
                          use_avgpool=use_avgpool)
         self.multi_fc = multi_fc
         if multi_fc:
