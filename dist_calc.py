@@ -1,200 +1,205 @@
-import numpy as np
+"""
+dist_calc.py — 안정성 상수 계산 (g-expansive, g-shadowing, Lip(g)) + Table 1 출력.
+
+모든 거리는 논문의 pseudometric  d_g(x, y) = d(g(x), g(y))  위에서 계산된다
+(기본 space='prob': 블록별 fc logit의 softmax 확률 공간, l2 거리).
+
+실행 예:
+  python dist_calc.py --model ds_resnet18 --data MNIST
+  python dist_calc.py --model ds_resnet50 --data CIFAR10 --device cuda
+
+계산 내용:
+  1) g-expansive 상수 eps  = min_{다른 클래스 쌍} max_{블록} d_g   (Definition 1)
+  2) pseudo-orbit 생성 → 진짜 궤도 추적 → Sh_g 추정 곡선          (Definition 2)
+  3) Lip(g) = max_b sigma_max(W_b) × (softmax 보정)               (정리 1 우변)
+  4) Table 1 행 출력 — F1 / Loss / g-expansive / g-shadowing / Lip(g)
+     (topological g-stable 상수는 정리 1의 Sh_g(phi) <= Lip(g)·T_g(phi)에
+      따라 사용자가 직접 계산: T_g(phi) >= Sh_g(phi) / Lip(g))
+
+산출물:
+  Result/{data}_{model}_epsilon.npy    — expansive 상수와 해당 쌍 정보
+  Result/{data}_{model}_shadowing.npy  — Sh_g 곡선 및 체인별 (delta, eps)
+  Result/{data}_{model}_theorem.npy    — Shg_phi, Lip_g, 블록별 sigma_max
+  task2/{data}_{model}_SeqInfo.npy 등  — 체인 정보 (inspect_examples.py 호환)
+"""
+import argparse
 import os
-from utils.task import DistanceMeasure, task_2
-from utils.builders import seq_builder, load_files
-from utils.read import task_old1, task2_read
-from utils.lipschitz import analyze_theorem
-import sys
-from utils.norms import softmax, sigmoid, norm, init_random
-from utils.distance import minkovski
+
+import numpy as np
 import torch
+
+from utils.expansive import expansive_constant
+from utils.lipschitz import lip_report_from_checkpoint
+from utils.norms import init_random
+from utils.shadowing import (build_pseudo_orbits, save_orbit_files,
+                             shadowing_constant, trace_orbits)
+from utils.trajectory import load_trajectory
+
+DS_LAYERS_MAP = {
+    'ds_resnet18': [2, 2, 2, 2],
+    'ds_resnet50': [3, 4, 6, 3],
+}
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description="DS-ResNets 안정성 상수 계산")
+    p.add_argument('--model', default='ds_resnet18',
+                   choices=list(DS_LAYERS_MAP))
+    p.add_argument('--data', default='MNIST',
+                   choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
+    p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
+                   help="d_g 관측 공간 (기본 prob = softmax 확률)")
+    p.add_argument('--n-samples', type=int, default=None,
+                   help="서브샘플 수 (space=feat 사용 시 권장)")
+    p.add_argument('--allow-cross-class', action='store_true',
+                   help="pseudo-orbit 이웃 탐색 시 클래스 제한 해제")
+    p.add_argument('--legacy-orbit', action='store_true',
+                   help="체인 생성을 구버전 방식(블록 0→1 전이 고정)으로")
+    p.add_argument('--cross-class-trace', action='store_true',
+                   help="추적 후보를 다른 클래스까지 허용")
+    p.add_argument('--chunk', type=int, default=1024)
+    p.add_argument('--device', default=None, help="'cuda' 지정 시 GPU 계산")
+    p.add_argument('--seed', type=int, default=13)
+    return p.parse_args()
+
+
+def run_analysis(data_name, model_tag, layers, space='prob', n_samples=None,
+                 allow_cross_class=False, depth_consistent=True,
+                 same_class_trace=True, chunk=1024, device=None, seed=13):
+    """안정성 분석 전체 파이프라인. Table 1에 필요한 상수를 dict로 반환."""
+    n_blocks = sum(layers)
+    tag = f"{data_name}_{model_tag}"
+    os.makedirs("Result", exist_ok=True)
+
+    # ── 궤적 로드 (d_g 공간) ─────────────────────────────────────────────
+    traj, labels, orig_idx = load_trajectory(
+        data_name, model_tag, n_blocks, space=space,
+        n_samples=n_samples, seed=seed)
+    N, T, D = traj.shape
+    print(f"[궤적] space={space}  N={N}  T={T}  D={D}")
+
+    # ── 1) g-expansive 상수 (min-max) ────────────────────────────────────
+    print("\n[eps] g-expansive 상수 계산 (min over 쌍, max over 블록)...")
+    eps_res = expansive_constant(traj, labels, chunk=chunk, device=device)
+    eps_res["sample_a"] = int(orig_idx[eps_res["sample_a"]])
+    eps_res["sample_b"] = int(orig_idx[eps_res["sample_b"]])
+    eps_res["space"] = space
+    np.save(f"Result/{tag}_epsilon.npy", eps_res)
+    print(f"[eps] eps = {eps_res['epsilon']:.6e}")
+    print(f"      클래스 {eps_res['class_a']} vs {eps_res['class_b']}  |  "
+          f"샘플 {eps_res['sample_a']} <-> {eps_res['sample_b']}  |  "
+          f"블록 {eps_res['block']}")
+
+    # ── 2) g-shadowing: pseudo-orbit → 추적 → Sh_g ───────────────────────
+    mode = "depth-consistent" if depth_consistent else "legacy(블록0→1)"
+    print(f"\n[Sh] pseudo-orbit 생성 ({mode}, cross_class={allow_cross_class})...")
+    seq, step_err = build_pseudo_orbits(
+        traj, labels, allow_cross_class=allow_cross_class,
+        depth_consistent=depth_consistent, chunk=max(chunk, 2048), device=device)
+
+    print("[Sh] 진짜 궤도 추적 오차 계산 (max over 블록, min over 후보)...")
+    trace_eps, tracer = trace_orbits(
+        traj, seq, labels, same_class_only=same_class_trace,
+        chunk=min(chunk, 512), device=device)
+
+    sh_res = shadowing_constant(step_err.numpy(), trace_eps.numpy())
+    save_orbit_files(data_name, model_tag, seq.numpy(), step_err.numpy(),
+                     labels, trace_eps.numpy(), orig_idx)
+    np.save(f"Result/{tag}_shadowing.npy", {
+        "Sh_g": sh_res["Sh_g"], "eps0": sh_res["eps0"],
+        "delta_star": sh_res["delta_star"], "curve": sh_res["curve"],
+        "space": space, "depth_consistent": depth_consistent,
+    })
+    print(f"[Sh] Sh_g 추정 곡선  (delta*(eps) = eps-추적 실패 체인이 생기기 "
+          "직전까지의 delta):")
+    print(f"      {'eps':>12}  {'delta*':>12}  {'delta*/eps':>12}")
+    for e, d, r in sh_res["curve"]:
+        print(f"      {e:>12.6f}  {d:>12.6f}  {r:>12.6f}")
+    print(f"[Sh] Sh_g = {sh_res['Sh_g']:.4f}  "
+          f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
+
+    # ── 3) Lip(g) ────────────────────────────────────────────────────────
+    multifc_ckpt = f"{model_tag}_{data_name}_multifc.pt"
+    lip_res = None
+    if os.path.exists(multifc_ckpt):
+        print(f"\n[Lip] {multifc_ckpt} 에서 블록별 sigma_max 계산...")
+        lip_res = lip_report_from_checkpoint(multifc_ckpt, space=space)
+        for b in sorted(lip_res["sigma_per_block"]):
+            print(f"      block {b:02d}: sigma_max = "
+                  f"{lip_res['sigma_per_block'][b]:.4f}")
+        print(f"[Lip] Lip(g) = {lip_res['Lip_g']:.4f}  "
+              f"(= sigma_max {lip_res['sigma_max']:.4f} × softmax 보정 "
+              f"{lip_res['softmax_factor']})")
+        if lip_res["main_fc"] is not None:
+            mf = lip_res["main_fc"]
+            print(f"      (참고: main fc  sigma_max={mf['sigma_max']:.4f}, "
+                  f"avgpool k={mf['avgpool_k']} → 보정 {mf['avgpool_factor']:.4f}, "
+                  f"Lip={mf['Lip']:.4f})")
+        np.save(f"Result/{tag}_theorem.npy", {
+            "Shg_phi": sh_res["Sh_g"],
+            "Lip_g": lip_res["Lip_g"],
+            "sigma_max": lip_res["sigma_max"],
+            "softmax_factor": lip_res["softmax_factor"],
+            "Lip_g_per_block": np.array(
+                [lip_res["sigma_per_block"][b]
+                 for b in sorted(lip_res["sigma_per_block"])]),
+            "space": space,
+        })
+    else:
+        print(f"\n[Lip] 건너뜀 — {multifc_ckpt} 없음. "
+              "main.py를 --use-block-fc로 먼저 실행하세요.")
+
+    # ── 4) Table 1 출력 ──────────────────────────────────────────────────
+    metrics = None
+    metrics_path = f"Result/{tag}_metrics.npy"
+    if os.path.exists(metrics_path):
+        metrics = np.load(metrics_path, allow_pickle=True).item()
+
+    def _f(v, fmt):
+        return format(v, fmt) if v is not None else "—"
+
+    print()
+    print("=" * 70)
+    print(f"  Table 1  —  {data_name} / {model_tag}   "
+          f"(space={space}, T={T}, N={N})")
+    print("-" * 70)
+    print(f"  F1 Score     : {_f(metrics['f1'] if metrics else None, '.4f')}")
+    print(f"  Loss         : {_f(metrics['loss'] if metrics else None, '.4f')}")
+    print(f"  g-expansive  : {eps_res['epsilon']:.6e}   "
+          f"(class {eps_res['class_a']} vs {eps_res['class_b']}, "
+          f"block {eps_res['block']})")
+    print(f"  g-shadowing  : {sh_res['Sh_g']:.4f}   "
+          f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
+    print(f"  Lip(g)       : "
+          f"{_f(lip_res['Lip_g'] if lip_res else None, '.4f')}")
+    print("-" * 70)
+    print("  topological g-stable: 정리 1  Sh_g(phi) <= Lip(g)·T_g(phi) 에 따라")
+    print("                        T_g(phi) >= Sh_g / Lip(g) 로 직접 계산하세요.")
+    print("=" * 70)
+
+    if metrics is None:
+        print(f"  (F1/Loss는 {metrics_path} 없음 — main.py 실행 시 자동 저장)")
+
+    return {"epsilon": eps_res, "shadowing": sh_res, "lipschitz": lip_res,
+            "metrics": metrics}
 
 
 if __name__ == '__main__':
-
-    # ── 옵션 설정 (main.py에서 학습한 값과 반드시 일치시킬 것) ─────────
-    MODEL_NAME        = "ds_resnet18"  # 'ds_resnet18' | 'ds_resnet50' (DS-ResNet 전용 분석)
-    DATA_NAME         = "MNIST"        # main.py의 DATA_NAME과 동일하게
-    USE_AVGPOOL       = True           # main.py의 USE_AVGPOOL과 동일하게
-    USE_FC_OUTPUT     = False  # True: 블록별 fc 출력(logit) 기반 거리 / False: raw 블록 특징 기반 거리
-    ALLOW_CROSS_CLASS = False  # False: 같은 클래스 내에서만 이웃 탐색 / True: 클래스 무관 (클래스 혼합 관찰용)
-
-    DS_LAYERS_MAP = {
-        'ds_resnet18': [2, 2, 2, 2],
-        'ds_resnet50': [3, 4, 6, 3],
-    }
-    if MODEL_NAME not in DS_LAYERS_MAP:
-        raise ValueError(
-            f"dist_calc.py는 DS-ResNet 전용 분석입니다 ('{MODEL_NAME}' 미지원). "
-            "ResNet-18/50은 레이어마다 채널 수가 달라 블록간 거리 비교가 성립하지 않습니다."
-        )
-    ds_layers = DS_LAYERS_MAP[MODEL_NAME]
-    n_blocks  = sum(ds_layers)
-    model_tag = MODEL_NAME
-
-    if USE_FC_OUTPUT:
-        f_path = f"prob_fc"      # main.py에서 저장한 fc 출력 경로
-        scale  = 1.0             # logit은 /1000 불필요
-    else:
-        f_path = f"prob"         # raw 블록 특징 경로
-        scale  = 1000.0          # 큰 특징값 스케일 조정
-
-    feat_dir = f"{f_path}/{DATA_NAME}/{model_tag}"
-    l_path   = f"pix/resnet/{DATA_NAME}/{model_tag}/test"
-
-    for b in range(n_blocks):
-        pth = f"{feat_dir}/{DATA_NAME}_block{b}.pt"
-        x = torch.load(pth)
-        if b == 0:
-            hold = x.detach().numpy().reshape(x.shape[0], 1, x.shape[1])
-            y = torch.load(f"{l_path}/{DATA_NAME}_label.pt")
-        else:
-            hold = np.concatenate((hold, x.detach().numpy().reshape(x.shape[0], 1, x.shape[1])), 1)
-
-    feat_dict = DistanceMeasure(hold / scale, y, norm="softmax")
-    feat_dict.task_1(DATA_NAME, model_tag)
-
-    seqs = seq_builder(hold, DATA_NAME, model_tag, n_blocks,
-                       labels=y, allow_cross_class=ALLOW_CROSS_CLASS)
-    best_stack, best_stack_mean = task_2(seqs, DATA_NAME,
-                                         labels=y, allow_cross_class=ALLOW_CROSS_CLASS)
-
-    # ── Expansive constant ε 계산 ─────────────────────────────────────────
-    # task_1 결과 파일에서 서로 다른 클래스 쌍의 최솟값(ε)과 해당 이미지 쌍을 탐색.
-    # task_1은 클래스 key별로 Result/task1/{DATA_NAME}_{model_tag}_Class_{key}_prob.npy 저장.
-    # 각 파일의 shape: (n_class, n_class, n_blocks, n_samples_i, n_samples_j)
-    # 여기서는 블록별 fc 출력(10-dim)을 사용하는 경우에만 의미 있으므로
-    # USE_FC_OUTPUT=True 일 때 실행을 권장하지만, raw 특징에도 동작함.
-    print("\n[ε] Expansive constant 계산 시작...")
-    task1_path = "Result/task1"
-    y_np = y.numpy() if hasattr(y, 'numpy') else np.array(y)
-    labels_unique = np.unique(y_np)
-
-    epsilon     = float("inf")
-    eps_cls_a   = None   # 클래스 A
-    eps_cls_b   = None   # 클래스 B
-    eps_idx_a   = None   # 클래스 A 내 샘플 인덱스
-    eps_idx_b   = None   # 클래스 B 내 샘플 인덱스
-    eps_block   = None   # 최솟값이 나타난 블록
-
-    for cls_a in labels_unique:
-        fname = os.path.join(task1_path, f"{DATA_NAME}_{model_tag}_Class_{cls_a}_prob.npy")
-        if not os.path.exists(fname):
-            continue
-        arr = np.load(fname, allow_pickle=True)
-        # arr shape 확인: task_1 저장 형태에 따라 달라질 수 있음
-        # tmp_ shape: (n_class, n_class, n_blocks, n_samp_a, n_samp_b) 또는 유사
-        # task_1 코드에서 key별로 key2를 쌓으므로 dim-0=key2, dim-1 이후 블록/샘플 정보
-        # 실제 배열 구조를 그대로 탐색:  모든 원소 중 클래스-간 최솟값 탐색
-        for cls_b in labels_unique:
-            if cls_b == cls_a:
-                continue
-            # arr의 key2 인덱스 순서가 sorted(key_list) 이므로 cls_b의 위치 = sorted index
-            b_idx_sorted = sorted(labels_unique.tolist()).index(int(cls_b))
-            try:
-                sub = arr[b_idx_sorted]   # (n_class, n_blocks, n_samp_a) or similar
-            except IndexError:
-                continue
-            sub_arr = np.array(sub, dtype=float)
-            flat_min = np.nanmin(sub_arr)
-            if flat_min < epsilon:
-                epsilon   = flat_min
-                eps_cls_a = int(cls_a)
-                eps_cls_b = int(cls_b)
-                flat_loc  = np.unravel_index(np.nanargmin(sub_arr), sub_arr.shape)
-                eps_block = int(flat_loc[0]) if sub_arr.ndim > 1 else 0
-                # 클래스별 전역 샘플 인덱스 복원
-                cls_a_global = np.where(y_np == cls_a)[0]
-                cls_b_global = np.where(y_np == cls_b)[0]
-                if sub_arr.ndim >= 2:
-                    eps_idx_a = int(cls_a_global[flat_loc[-2]]) if flat_loc[-2] < len(cls_a_global) else None
-                    eps_idx_b = int(cls_b_global[flat_loc[-1]]) if flat_loc[-1] < len(cls_b_global) else None
-                else:
-                    eps_idx_a = eps_idx_b = None
-
-    print(f"[ε] Expansive constant ε = {epsilon:.6f}")
-    print(f"    클래스 쌍 : {eps_cls_a} vs {eps_cls_b}")
-    print(f"    블록      : {eps_block}")
-    print(f"    샘플 인덱스: {eps_idx_a} (class {eps_cls_a})  ↔  {eps_idx_b} (class {eps_cls_b})")
-
-    eps_result = {
-        "epsilon":   epsilon,
-        "class_a":   eps_cls_a,
-        "class_b":   eps_cls_b,
-        "block":     eps_block,
-        "sample_a":  eps_idx_a,
-        "sample_b":  eps_idx_b,
-    }
-    os.makedirs("Result", exist_ok=True)
-    np.save(f"Result/{DATA_NAME}_{model_tag}_epsilon.npy", eps_result)
-    print(f"[ε] 저장 완료: Result/{DATA_NAME}_{model_tag}_epsilon.npy")
-
-    # ── 정리 계산: Shg(φ) / Lip(g) → Tg(φ) 하한 ─────────────────────────
-    # main.py에서 USE_BLOCK_FC=True로 학습하면 "{model_tag}_{DATA_NAME}_multifc.pt"가 저장됨.
-    multifc_ckpt = f"{model_tag}_{DATA_NAME}_multifc.pt"
-    if USE_FC_OUTPUT and os.path.exists(multifc_ckpt):
-        theorem_result = analyze_theorem(
-            d_name      = DATA_NAME,
-            model       = model_tag,
-            ckpt_path   = multifc_ckpt,
-            feat_dim    = 2048 * 7 * 14,   # 블록 특징 차원 (DS-ResNet 공통)
-            n_class     = 10,
-            layers      = ds_layers,
-            use_avgpool = USE_AVGPOOL,
-            save_path   = "Result",
-        )
-    else:
-        print("\n[정리] block_fc 체크포인트가 없거나 USE_FC_OUTPUT=False.")
-        print(f"       main.py에서 MODEL_NAME='{MODEL_NAME}', USE_BLOCK_FC=True로 학습 후"
-              " dist_calc.py를 다시 실행하세요.")
-
-    sys.exit()
-    dim.class_wise(data_name, result_)
-    old_task1 = task_old1(n_class, data_name, result_)
-
-    f_name = f"Task_1_{data_name}"
-    if not os.path.exists(f_name+'_9.npy'):
-        dim.task_1(f_name)
-    for key in np.arange(10):
-        dist_vals = np.load(f'{f_name}_{key}.npy', allow_pickle=True)
-        print(dist_vals.shape)
-        print(np.max(dist_vals, 3).shape)
-    
-    if os.path.exists(f"Targets_{data_name}.npy"):
-        seqs = task2_read(data_name)
-    else:
-        seqs = seq_builder(feats, labels)
-    # distance = minkovski(seqs[0], seqs[1], 2)
-
-    seq_max = np.max(seqs[3], axis=1)
-    seq_mean = np.mean(seqs[3], axis=1)
-    print(seq_max)
-    print(seq_mean)
-    # delta
-    d1 = np.min(seq_max)
-    d2 = np.min(seq_mean)
-
-    if os.path.exists(f"Task2_{data_name}_best_max.npy"):
-        best_stack = np.load(f"Task2_{data_name}_best_max.npy", allow_pickle=True)
-        best_stack_mean = np.load(f"Task2_{data_name}_best_mean.npy", allow_pickle=True)
-    else:
-        best_stack, best_stack_mean = task_2(seqs, f"Task2_{data_name}")
-    best = np.argsort(best_stack[:, 1])[0]
-    best_mean = np.argsort(best_stack_mean[:, 1])[0]
-    # epsilon
-    e1 = np.min(best_stack[:, 1])
-    e1s = np.argsort(best_stack[:, 1])[:10]
-    e2 = np.min(best_stack_mean[:, 1])
-    e2s = np.argsort(best_stack_mean[:, 1])[:10]
-
-    tos = np.ndarray((2, 3), dtype=object)
-    tos[0] = np.array([1, e1, d1])
-    tos[1] = np.array([2, e2, d2])
-    np.save("epdel12", tos)
-
-
-
-
-
-
-
+    args = parse_args()
+    init_random(args.seed)
+    if args.space == 'feat' and args.n_samples is None:
+        print("[안내] space='feat'는 D=200,704라 메모리 소모가 큽니다. "
+              "--n-samples 1000 등을 권장합니다.")
+    run_analysis(
+        data_name=args.data,
+        model_tag=args.model,
+        layers=DS_LAYERS_MAP[args.model],
+        space=args.space,
+        n_samples=args.n_samples,
+        allow_cross_class=args.allow_cross_class,
+        depth_consistent=not args.legacy_orbit,
+        same_class_trace=not args.cross_class_trace,
+        chunk=args.chunk,
+        device=args.device,
+        seed=args.seed,
+    )

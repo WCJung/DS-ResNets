@@ -1,93 +1,78 @@
 """
-더미 데이터로 파이프라인 전체 + 정리 계산을 테스트합니다.
+더미 데이터로 안정성 분석 파이프라인 전체를 스모크 테스트합니다.
+(학습/데이터 다운로드 없이 utils 모듈만 검사)
 
 구조:
-  - N=15 샘플 (클래스 3개 × 5샘플)
-  - n_blocks=4 블록
-  - feat_dim=16 특징 차원
-  - n_class=3 클래스
+  - N=30 샘플 (클래스 3개 × 10샘플)
+  - T=5 블록
+  - D=3 (관측 공간 차원 = 클래스 수)
 
 실행: python test_pipeline.py
 """
-
 import numpy as np
 import torch
 import torch.nn as nn
-import os
 
+from utils.expansive import expansive_constant
+from utils.lipschitz import spectral_norm_fc
 from utils.norms import init_random
-from utils.task import DistanceMeasure, task_2
-from utils.builders import seq_builder
-from utils.lipschitz import shg_phi, lip_g, theorem_lower_bound
+from utils.shadowing import (build_pseudo_orbits, shadowing_constant,
+                             trace_orbits)
 
-# ── 재현성 ──────────────────────────────────────────────
 init_random(42)
 
-# ── 더미 데이터 생성 ────────────────────────────────────
-N, n_blocks, feat_dim, n_class = 15, 4, 16, 3
-hold = np.random.randn(N, n_blocks, feat_dim).astype(np.float32)
-y = torch.tensor([i % n_class for i in range(N)])   # 0,1,2,0,1,2,...
+N, T, n_class = 30, 5, 3
+labels = torch.tensor([i % n_class for i in range(N)])
 
-print(f"hold shape : {hold.shape}")   # (15, 4, 16)
-print(f"labels     : {y}")
+# 클래스별로 분리된 궤적 생성: 클래스 중심 + 소음 → softmax로 확률 공간에 배치
+centers = torch.eye(n_class) * 4.0
+raw = centers[labels].unsqueeze(1).repeat(1, T, 1) + 0.5 * torch.randn(N, T, n_class)
+traj = torch.softmax(raw, dim=-1)
 
-# ── Phase 1: DistanceMeasure.task_1 ────────────────────
-print("\n[Phase 1] task_1 시작...")
-os.makedirs("Result/task1", exist_ok=True)
+print(f"traj  : {tuple(traj.shape)}  (N, T, D)")
+print(f"labels: {labels.tolist()}")
 
-dm = DistanceMeasure(hold / 1000, y, norm="softmax")
-dm.task_1("dummy", "TestModel")
+# ── Phase 1: g-expansive 상수 (min over 쌍, max over 블록) ─────────────
+print("\n[Phase 1] expansive_constant ...")
+eps_res = expansive_constant(traj, labels, chunk=8, verbose=False)
+assert eps_res["epsilon"] > 0
+assert eps_res["class_a"] != eps_res["class_b"]
+print(f"  eps = {eps_res['epsilon']:.4f}  "
+      f"(class {eps_res['class_a']} vs {eps_res['class_b']}, "
+      f"block {eps_res['block']})")
+print("[Phase 1] OK\n")
 
-saved = [f for f in os.listdir("Result/task1") if f.startswith("dummy")]
-print(f"  저장된 파일: {saved}")
-print("[Phase 1] 완료\n")
+# ── Phase 2: pseudo-orbit + 추적 + Sh_g ────────────────────────────────
+print("[Phase 2] build_pseudo_orbits / trace_orbits / shadowing_constant ...")
+seq, step_err = build_pseudo_orbits(traj, labels, allow_cross_class=False,
+                                    depth_consistent=True, chunk=8)
+assert seq.shape == (N, T) and step_err.shape == (N, T - 1)
+# 클래스 제한: 체인 멤버 전원이 시작 샘플과 같은 클래스여야 함
+assert (labels[seq] == labels[seq[:, :1]]).all()
+# 방문 중복 없음
+for i in range(N):
+    assert len(set(seq[i].tolist())) == T
 
-# ── Phase 2: seq_builder + task_2 (class-aware) ────────
-print("[Phase 2] seq_builder 시작...")
-os.makedirs("task2", exist_ok=True)
+trace_eps, tracer = trace_orbits(traj, seq, labels, same_class_only=True, chunk=8)
+assert trace_eps.shape == (N,)
 
-seqs = seq_builder(hold, "dummy", "TestModel", n_blocks,
-                   labels=y, allow_cross_class=False)
-print(f"  seqs[0] (Targets)   shape : {seqs[0].shape}")
-print(f"  seqs[1] (Series)    shape : {seqs[1].shape}")
-print(f"  seqs[2] (SeqInfo)   shape : {seqs[2].shape}")
-print(f"  seqs[3] (MaxList)   shape : {seqs[3].shape}")
-print(f"  seqs[4] (ClassInfo) shape : {seqs[4].shape}")
+sh = shadowing_constant(step_err.numpy(), trace_eps.numpy())
+print(f"  Sh_g = {sh['Sh_g']:.4f}  (eps0={sh['eps0']:.4f}, "
+      f"delta*={sh['delta_star']:.4f})")
+print(f"  곡선 점 개수: {len(sh['curve'])}")
 
-best_stack, best_stack_mean = task_2(seqs, "dummy",
-                                      labels=y, allow_cross_class=False)
-print(f"  best_stack shape      : {best_stack.shape}")
-print(f"  best_stack_mean shape : {best_stack_mean.shape}")
-print("[Phase 2] 완료\n")
+# legacy 모드도 동작 확인
+seq_l, step_l = build_pseudo_orbits(traj, labels, depth_consistent=False, chunk=8)
+assert seq_l.shape == (N, T)
+print("[Phase 2] OK\n")
 
-# ── Phase 3: 정리 계산 — Shg(φ) / Lip(g) → Tg(φ) 하한 ──
-print("[Phase 3] 정리 계산...")
+# ── Phase 3: Lip(g) — 선형층 스펙트럴 노름 ─────────────────────────────
+print("[Phase 3] spectral_norm_fc ...")
+fc = nn.Linear(16, n_class)
+sigma = spectral_norm_fc(fc)
+ref = float(np.linalg.svd(fc.weight.detach().numpy(), compute_uv=False)[0])
+assert abs(sigma - ref) < 1e-5
+print(f"  sigma_max = {sigma:.4f} (numpy 참조값과 일치)")
+print("[Phase 3] OK\n")
 
-# Shg(φ): MaxList로부터 pseudo-orbit 최대 오차
-maxlist = seqs[3]   # (N, n_blocks)
-shg, per_chain = shg_phi(maxlist)
-print(f"  MaxList shape          : {maxlist.shape}")
-print(f"  샘플별 최대 오차       : {per_chain.round(4)}")
-print(f"  Shg(φ)                 = {shg:.6f}")
-
-# Lip(g): 더미 fc 레이어의 spectral norm 계산
-# (실제 실행에서는 train_block_fc()로 학습된 extractor.block_fc를 사용)
-class DummyExtractor:
-    """테스트용 더미 — block_fc는 실제 nn.Linear와 동일 구조"""
-    def __init__(self):
-        self.block_fc = nn.ModuleList(
-            [nn.Linear(feat_dim, n_class) for _ in range(n_blocks)]
-        )
-
-dummy_ext = DummyExtractor()
-lip_max, lip_list = lip_g(dummy_ext)
-print(f"  블록별 Lip(g_b)        : {[round(l,4) for l in lip_list]}")
-print(f"  Lip(g) (전체 최댓값)   = {lip_max:.6f}")
-
-# Tg(φ) 하한
-tg_lb = theorem_lower_bound(shg, lip_max)
-print(f"\n  정리:  Shg(φ) ≤ Lip(g) · Tg(φ)")
-print(f"  ∴ Tg(φ) ≥ Shg(φ) / Lip(g) = {shg:.4f} / {lip_max:.4f} = {tg_lb:.6f}")
-print("[Phase 3] 완료\n")
-
-print("=== 전체 파이프라인 테스트 성공 ===")
+print("=== 전체 파이프라인 스모크 테스트 성공 ===")

@@ -18,9 +18,10 @@
   - dist_calc.py를 동일한 MODEL_NAME/DATA_NAME으로 실행해 task2/{DATA_NAME}_{model_tag}_
     SeqInfo.npy, MaxList.npy 가 생성되어 있어야 함 (pseudo-orbit 체인 분석용).
 
-실행: python inspect_examples.py
+실행: python inspect_examples.py --model ds_resnet18 --data MNIST
 """
 
+import argparse
 import os
 import numpy as np
 import torch
@@ -30,9 +31,19 @@ from utils.stubs import load_data
 from utils.orbit_analysis import find_expansive_outliers, analyze_pseudo_orbit_stability
 
 
-# ── 옵션 설정 (main.py / dist_calc.py에서 사용한 값과 반드시 일치시킬 것) ─────
-MODEL_NAME = "ds_resnet18"   # 'ds_resnet18' | 'ds_resnet50'
-DATA_NAME  = "MNIST"         # main.py의 DATA_NAME과 동일하게
+DS_LAYERS_MAP = {
+    'ds_resnet18': [2, 2, 2, 2],
+    'ds_resnet50': [3, 4, 6, 3],
+}
+
+_p = argparse.ArgumentParser(description="Expansive/Shadowing 사례 시각화")
+_p.add_argument('--model', default='ds_resnet18', choices=list(DS_LAYERS_MAP))
+_p.add_argument('--data', default='MNIST',
+                choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
+_args = _p.parse_args()
+
+MODEL_NAME = _args.model
+DATA_NAME  = _args.data
 
 TOP_K_EXPANSIVE = 10
 TOP_K_SHADOWING = 5
@@ -40,12 +51,6 @@ MIN_DEPTH_RATIO = 0.5        # [Expansive]: 이 비율 이상 통과한 블록�
 
 OUT_DIR = "Result/inspect"
 
-DS_LAYERS_MAP = {
-    'ds_resnet18': [2, 2, 2, 2],
-    'ds_resnet50': [3, 4, 6, 3],
-}
-if MODEL_NAME not in DS_LAYERS_MAP:
-    raise ValueError(f"inspect_examples.py는 DS-ResNet 전용입니다 ('{MODEL_NAME}' 미지원).")
 n_blocks = sum(DS_LAYERS_MAP[MODEL_NAME])
 model_tag = MODEL_NAME
 
@@ -117,7 +122,7 @@ if __name__ == '__main__':
     if not (os.path.exists(seqinfo_path) and os.path.exists(maxlist_path)):
         raise FileNotFoundError(
             f"{seqinfo_path} 또는 {maxlist_path} 없음. "
-            f"dist_calc.py를 MODEL_NAME='{model_tag}', DATA_NAME='{DATA_NAME}'로 먼저 실행하세요."
+            f"dist_calc.py --model {model_tag} --data {DATA_NAME} 를 먼저 실행하세요."
         )
     seq_info = np.load(seqinfo_path, allow_pickle=True)
     maxlist = np.load(maxlist_path, allow_pickle=True)

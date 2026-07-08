@@ -5,9 +5,11 @@ run_all.py — Automated full experiment runner.
 
 Per combination:
   1. Train backbone (up to EPOCHS epochs, early stop ES)
-  2. Extract per-block raw features          -> prob/{DATA}/{model}/
-  3. Train block-wise linear probes (DS-only) -> prob_fc/{DATA}/{model}/
-  4. Distance analysis: task_1, seq_builder, epsilon, theorem
+  2. Evaluate F1/Loss/Acc                     -> Result/{DATA}_{model}_metrics.npy
+  3. Extract per-block raw features           -> prob/{DATA}/{model}/
+  4. Train block-wise linear probes (DS-only) -> prob_fc/{DATA}/{model}/
+  5. Stability analysis (dist_calc.run_analysis):
+     g-expansive, pseudo-orbits, Sh_g, Lip(g), Table 1 print
 
 Usage:
   python run_all.py
@@ -15,23 +17,23 @@ Usage:
 All output is mirrored to logs/run_all_<timestamp>.log
 """
 
+import datetime
 import os
-import sys
 import re
+import sys
 import time
 import traceback
-import datetime
-import numpy as np
+
 import torch
 import torch.nn as nn
 import torchvision.models as tv_models
 
-from models.ResNets import ResNet, Bottleneck
+from dist_calc import run_analysis
+from models.models import build_ds_resnet
 from utils.norms import init_random
-from utils.stubs import load_data, train, train_block_fc, Exprob
-from utils.task import DistanceMeasure, task_2
-from utils.builders import seq_builder
-from utils.lipschitz import analyze_theorem
+from utils.stubs import (Exprob, evaluate, extract_block_outputs, load_data,
+                         save_block_outputs, save_labels, save_metrics,
+                         train, train_block_fc)
 
 
 # ── Experiment configuration ───────────────────────────────────────────────────
@@ -43,18 +45,19 @@ N_CLASS           = 10
 EPOCHS            = 100
 EARLY_STOP        = 20
 LR                = 5e-5
-BATCH_SIZE        = 64        # 16 -> 64: better A100 utilization, negligible accuracy delta
+BATCH_SIZE        = 64
 
 USE_BLOCK_FC      = True      # DS-ResNet: train per-block linear probes
-USE_AVGPOOL       = True      # DS-ResNet: avgpool before main fc (feat=2048, tight Lip)
-ALLOW_CROSS_CLASS = False     # seq_builder: same-class neighbors only
+USE_AVGPOOL       = True      # DS-ResNet: avgpool before main fc
+SPACE             = 'prob'    # d_g 관측 공간: softmax 확률 (dist_calc 참조)
+ALLOW_CROSS_CLASS = False     # pseudo-orbit: same-class neighbors only
+ANALYSIS_DEVICE   = 'cuda' if torch.cuda.is_available() else None
 
 DS_LAYERS_MAP = {
     'ds_resnet18': [2, 2, 2, 2],   #  8 blocks
     'ds_resnet50': [3, 4, 6, 3],   # 16 blocks
 }
-FEAT_DIM = 2048 * 7 * 14           # 200,704 — DS-ResNet block feature dim
-LOG_DIR  = "logs"
+LOG_DIR = "logs"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -103,26 +106,12 @@ class _Tee:
         sys.stdout = self._real
 
 
-# ── Step 1: train + feature extraction ────────────────────────────────────────
-
-def _eval_accuracy(model, testloader, device):
-    model.eval()
-    correct = total = 0
-    with torch.no_grad():
-        for x, y in testloader:
-            x, y = x.to(device), y.to(device)
-            pred  = model(x).argmax(dim=1)
-            correct += (pred == y).sum().item()
-            total   += y.size(0)
-    return 100.0 * correct / total
-
+# ── Step 1: train + extraction ────────────────────────────────────────────────
 
 def _make_model(model_name, device):
-    is_ds = model_name in DS_LAYERS_MAP
-    if is_ds:
-        layers = DS_LAYERS_MAP[model_name]
-        model  = ResNet(block=Bottleneck, layers=layers,
-                        num_classes=N_CLASS, use_avgpool=USE_AVGPOOL)
+    if model_name in DS_LAYERS_MAP:
+        model = build_ds_resnet(DS_LAYERS_MAP[model_name], N_CLASS,
+                                use_avgpool=USE_AVGPOOL)
     elif model_name == 'resnet18':
         model = tv_models.resnet18(weights=None)
         model.fc = nn.Linear(model.fc.in_features, N_CLASS)
@@ -137,8 +126,7 @@ def _make_model(model_name, device):
 def step_train_extract(model_name, data_name, device,
                        train_dataset, test_dataset):
     is_ds     = model_name in DS_LAYERS_MAP
-    model_tag = model_name
-    ckpt_name = f"{model_tag}_{data_name}"
+    ckpt_name = f"{model_name}_{data_name}"
 
     num_workers = 4 if sys.platform != 'win32' else 0
     trainloader = torch.utils.data.DataLoader(
@@ -154,184 +142,68 @@ def step_train_extract(model_name, data_name, device,
     model = _make_model(model_name, device)
     train(model, trainloader, testloader, device,
           epochs=EPOCHS, es=EARLY_STOP, lpth=ckpt_name, lr=LR)
-    # reload best checkpoint (train() keeps saving best-loss, last epoch may not be best)
+    # reload best checkpoint (train() saves best test-loss state)
     model.load_state_dict(torch.load(f"{ckpt_name}.pt", map_location=device))
-    acc = _eval_accuracy(model, testloader, device)
-    os.makedirs("Result", exist_ok=True)
-    np.save(f"Result/{data_name}_{model_tag}_accuracy.npy",
-            {"accuracy": acc, "model": model_tag, "data": data_name})
+    metrics = evaluate(model, testloader, device)
+    save_metrics(metrics, data_name, model_name)
     print(f"  [{G}done{RST}] training  {fmt_time(time.time() - t0)}"
-          f"  |  test acc = {G}{acc:.2f}%{RST}")
+          f"  |  F1 = {G}{metrics['f1']:.4f}{RST}"
+          f"  |  loss = {metrics['loss']:.4f}"
+          f"  |  acc = {metrics['acc']*100:.2f}%")
 
     if not is_ds:
-        print(f"  {Y}[skip]{RST} {model_name}: standard ResNet — accuracy baseline only, "
-              "no block analysis.")
+        print(f"  {Y}[skip]{RST} {model_name}: standard ResNet — accuracy baseline "
+              "only, no block analysis.")
         return
 
-    # ── DS-ResNet: raw block feature extraction ────────────────────────────
+    # ── DS-ResNet: block outputs ───────────────────────────────────────────
     ds_layers = DS_LAYERS_MAP[model_name]
-    extractor = Exprob(FEAT_DIM, N_CLASS, layers=ds_layers,
+    extractor = Exprob(N_CLASS, layers=ds_layers,
                        multi_fc=USE_BLOCK_FC, use_avgpool=USE_AVGPOOL)
-    state = torch.load(f"{ckpt_name}.pt", map_location=device)
-    extractor.load_state_dict(state, strict=False)
-    extractor.to(device).eval()
+    extractor.load_state_dict(
+        torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
+    extractor.to(device)
 
-    _section("Extracting raw block features ...")
+    _section("Extracting raw block features + labels ...")
     t0 = time.time()
-    block_acc = {}
-    with torch.no_grad():
-        for xx, _ in testloader:
-            for b, feat in extractor(xx.to(device)).items():
-                fc = feat.detach().cpu()
-                block_acc[b] = fc if b not in block_acc else torch.cat((block_acc[b], fc))
+    feats, labels = extract_block_outputs(extractor, testloader, device)
+    feat_dir = save_block_outputs(feats, "prob", data_name, model_name)
+    del feats
+    pix_dir = save_labels(labels, data_name, model_name)
+    print(f"  [{G}done{RST}] raw features -> {feat_dir}/  |  labels -> {pix_dir}/  "
+          f"{fmt_time(time.time() - t0)}")
 
-    feat_dir = f"prob/{data_name}/{model_tag}"
-    os.makedirs(feat_dir, exist_ok=True)
-    for b, feat in block_acc.items():
-        torch.save(feat, f"{feat_dir}/{data_name}_block{b}.pt")
-    print(f"  [{G}done{RST}] raw features -> {feat_dir}/  {fmt_time(time.time() - t0)}")
-
-    # ── block-wise linear probes (block_fc) ───────────────────────────────
     if USE_BLOCK_FC:
         _section("Training block-wise linear probes ...")
         t0 = time.time()
         train_block_fc(extractor, trainloader, device, epochs=5)
         torch.save(extractor.state_dict(), f"{ckpt_name}_multifc.pt")
 
-        extractor.eval()
-        fc_acc = {}
-        with torch.no_grad():
-            for xx, _ in testloader:
-                for b, logit in extractor(xx.to(device), use_block_fc=True).items():
-                    lc = logit.detach().cpu()
-                    fc_acc[b] = lc if b not in fc_acc else torch.cat((fc_acc[b], lc))
-
-        fc_dir = f"prob_fc/{data_name}/{model_tag}"
-        os.makedirs(fc_dir, exist_ok=True)
-        for b, logit in fc_acc.items():
-            torch.save(logit, f"{fc_dir}/{data_name}_block{b}.pt")
-        print(f"  [{G}done{RST}] block_fc outputs -> {fc_dir}/  {fmt_time(time.time() - t0)}")
-
-    # ── label + chunked feature save (for inspect_examples.py) ───────────
-    _section("Saving labels and chunked features ...")
-    t0 = time.time()
-    extractor.load_state_dict(
-        torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
-    extractor.to(device).eval()
-
-    yout = None
-    with torch.no_grad():
-        for i, (x, y) in enumerate(testloader):
-            out  = extractor(x.to(device))
-            yout = y if yout is None else torch.cat((yout, y))
-            pix_dir = f"pix/resnet/{data_name}/{model_tag}/test"
-            os.makedirs(pix_dir, exist_ok=True)
-            for key, feat in out.items():
-                torch.save(feat.cpu(), f"{pix_dir}/{data_name}_block{key}_{i}.pt")
-    torch.save(yout, f"pix/resnet/{data_name}/{model_tag}/test/{data_name}_label.pt")
-    print(f"  [{G}done{RST}] labels -> pix/resnet/{data_name}/{model_tag}/test/  "
-          f"{fmt_time(time.time() - t0)}")
+        logits, _ = extract_block_outputs(extractor, testloader, device,
+                                          use_block_fc=True)
+        fc_dir = save_block_outputs(logits, "prob_fc", data_name, model_name)
+        print(f"  [{G}done{RST}] block_fc outputs -> {fc_dir}/  "
+              f"{fmt_time(time.time() - t0)}")
 
 
-# ── Step 2: distance analysis ──────────────────────────────────────────────────
+# ── Step 2: stability analysis ─────────────────────────────────────────────────
 
-def step_analysis(model_name, data_name, device):
+def step_analysis(model_name, data_name):
     if model_name not in DS_LAYERS_MAP:
         return   # standard ResNets skipped
 
-    ds_layers = DS_LAYERS_MAP[model_name]
-    n_blocks  = sum(ds_layers)
-    model_tag = model_name
-    ckpt_name = f"{model_tag}_{data_name}"
-
-    feat_dir = f"prob/{data_name}/{model_tag}"
-    l_path   = f"pix/resnet/{data_name}/{model_tag}/test"
-
-    # ── load features (N, n_blocks, feat_dim) ────────────────────────────
-    _section("Loading features for analysis ...")
-    hold = None
-    for b in range(n_blocks):
-        x     = torch.load(f"{feat_dir}/{data_name}_block{b}.pt")
-        chunk = x.detach().numpy().reshape(x.shape[0], 1, x.shape[1])
-        hold  = chunk if hold is None else np.concatenate((hold, chunk), axis=1)
-    y    = torch.load(f"{l_path}/{data_name}_label.pt")
-    y_np = y.numpy() if hasattr(y, 'numpy') else np.array(y)
-    labels_unique = np.unique(y_np)
-    print(f"  N={hold.shape[0]}  blocks={n_blocks}  feat_dim={hold.shape[2]}")
-
-    # ── task_1: class-wise Minkowski distance matrices ─────────────────────
-    _section("task_1: class-wise Minkowski distances ...")
+    _section("Stability analysis: eps / Sh_g / Lip(g) / Table 1 ...")
     t0 = time.time()
-    feat_dict = DistanceMeasure(hold / 1000.0, y, norm="softmax")
-    feat_dict.task_1(data_name, model_tag)
-    print(f"  [{G}done{RST}] task_1  {fmt_time(time.time() - t0)}")
-
-    # ── seq_builder: pseudo-orbit chains ──────────────────────────────────
-    _section("seq_builder: building pseudo-orbit chains ...")
-    t0 = time.time()
-    seqs = seq_builder(hold, data_name, model_tag, n_blocks,
-                       labels=y, allow_cross_class=ALLOW_CROSS_CLASS)
-    best_stack, best_stack_mean = task_2(seqs, data_name,
-                                         labels=y, allow_cross_class=ALLOW_CROSS_CLASS)
-    print(f"  [{G}done{RST}] seq_builder + task_2  {fmt_time(time.time() - t0)}")
-
-    # ── expansive constant ε ───────────────────────────────────────────────
-    _section("Computing expansive constant ε ...")
-    t0        = time.time()
-    task1_dir = "Result/task1"
-    epsilon   = float("inf")
-    eps_cls_a = eps_cls_b = eps_idx_a = eps_idx_b = eps_block = None
-
-    for cls_a in labels_unique:
-        fname = os.path.join(task1_dir,
-                             f"{data_name}_{model_tag}_Class_{cls_a}_prob.npy")
-        if not os.path.exists(fname):
-            continue
-        arr = np.load(fname, allow_pickle=True)
-        for cls_b in labels_unique:
-            if cls_b == cls_a:
-                continue
-            b_idx = sorted(labels_unique.tolist()).index(int(cls_b))
-            try:
-                sub = arr[b_idx]
-            except IndexError:
-                continue
-            sub_arr  = np.array(sub, dtype=float)
-            flat_min = np.nanmin(sub_arr)
-            if flat_min < epsilon:
-                epsilon   = flat_min
-                eps_cls_a = int(cls_a)
-                eps_cls_b = int(cls_b)
-                flat_loc  = np.unravel_index(np.nanargmin(sub_arr), sub_arr.shape)
-                eps_block = int(flat_loc[0]) if sub_arr.ndim > 1 else 0
-                cls_a_g   = np.where(y_np == cls_a)[0]
-                cls_b_g   = np.where(y_np == cls_b)[0]
-                if sub_arr.ndim >= 2:
-                    eps_idx_a = int(cls_a_g[flat_loc[-2]]) if flat_loc[-2] < len(cls_a_g) else None
-                    eps_idx_b = int(cls_b_g[flat_loc[-1]]) if flat_loc[-1] < len(cls_b_g) else None
-
-    os.makedirs("Result", exist_ok=True)
-    np.save(f"Result/{data_name}_{model_tag}_epsilon.npy",
-            {"epsilon": epsilon, "class_a": eps_cls_a, "class_b": eps_cls_b,
-             "block": eps_block, "sample_a": eps_idx_a, "sample_b": eps_idx_b})
-    print(f"  ε = {epsilon:.6f}  (class {eps_cls_a} <-> class {eps_cls_b}"
-          f", block {eps_block})  {fmt_time(time.time() - t0)}")
-
-    # ── theorem: Shg / Lip → Tg lower bound ───────────────────────────────
-    multifc_ckpt = f"{ckpt_name}_multifc.pt"
-    if USE_BLOCK_FC and os.path.exists(multifc_ckpt):
-        _section("Theorem: Shg(phi) / Lip(g) -> Tg(phi) lower bound ...")
-        t0 = time.time()
-        analyze_theorem(
-            d_name=data_name, model=model_tag,
-            ckpt_path=multifc_ckpt,
-            feat_dim=FEAT_DIM, n_class=N_CLASS,
-            layers=ds_layers, use_avgpool=USE_AVGPOOL,
-            save_path="Result",
-        )
-        print(f"  [{G}done{RST}] theorem  {fmt_time(time.time() - t0)}")
-    else:
-        print(f"  {Y}[skip]{RST} theorem: {multifc_ckpt} not found.")
+    run_analysis(
+        data_name=data_name,
+        model_tag=model_name,
+        layers=DS_LAYERS_MAP[model_name],
+        space=SPACE,
+        allow_cross_class=ALLOW_CROSS_CLASS,
+        device=ANALYSIS_DEVICE,
+        seed=SEED,
+    )
+    print(f"  [{G}done{RST}] analysis  {fmt_time(time.time() - t0)}")
 
 
 # ── Single combination runner ──────────────────────────────────────────────────
@@ -354,7 +226,7 @@ def run_combo(model_name, data_name, device, idx, total, global_start):
         print(f"  train={len(train_ds):,}  test={len(test_ds):,}")
 
         step_train_extract(model_name, data_name, device, train_ds, test_ds)
-        step_analysis(model_name, data_name, device)
+        step_analysis(model_name, data_name)
 
         dur = fmt_time(time.time() - t0)
         print(f"\n  {G}{BLD}[{idx}/{total}] OK{RST}  {model_name} x {data_name}  ({dur})")
@@ -393,7 +265,7 @@ if __name__ == '__main__':
     print(f"  Models    : {MODELS}")
     print(f"  Datasets  : {DATASETS}")
     print(f"  Batch     : {BATCH_SIZE}  |  Epochs: {EPOCHS}  |  ES: {EARLY_STOP}  |  LR: {LR}")
-    print(f"  block_fc  : {USE_BLOCK_FC}  |  avgpool: {USE_AVGPOOL}")
+    print(f"  block_fc  : {USE_BLOCK_FC}  |  avgpool: {USE_AVGPOOL}  |  space: {SPACE}")
     print(f"  Log       : {log_path}")
     print(f"  Total     : {len(combos)} combinations")
 

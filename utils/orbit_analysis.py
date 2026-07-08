@@ -3,7 +3,7 @@
 
 - find_expansive_outliers        : 같은 클래스 쌍 중 block_fc 출력 거리가
   비정상적으로 "큰" Top-K 쌍을 탐색 (block_fc 단계에서의 클래스 내부 불일치 사례).
-- analyze_pseudo_orbit_stability : seq_builder가 만든 pseudo-orbit 체인을 따라
+- analyze_pseudo_orbit_stability : build_pseudo_orbits가 만든 체인을 따라
   block_fc[0] 예측 클래스가 얼마나 안정적으로(바뀌지 않고) 유지되는지를 평가.
 """
 
@@ -69,20 +69,19 @@ def find_expansive_outliers(prob_fc_blocks, labels, n_blocks, top_k=10, min_dept
 
 
 def analyze_pseudo_orbit_stability(seq_info, maxlist, prob_fc_block0, labels, top_k=5):
-    """pseudo-orbit 체인(seq_builder 출력)을 따라 예측 클래스 안정성을 평가.
+    """pseudo-orbit 체인(utils.shadowing.build_pseudo_orbits 출력)을 따라
+    예측 클래스 안정성을 평가.
 
-    seq_builder가 만든 체인의 모든 단계(Series)는 항상 "어떤 실제 샘플의
-    block-0 특징"이다 (block을 진행할 때마다 가장 가까운 새로운 같은-클래스
-    샘플의 block-0 특징으로 점프하는 구조). 따라서 체인 각 멤버의 예측 클래스는
-    block_fc[0]을 적용해서 구한다.
+    체인의 각 단계는 실제 테스트 샘플 인덱스이므로, 체인 멤버의 예측 클래스는
+    block_fc[0] 출력(입력 시점 관측)을 적용해 구한다.
 
     Parameters
     ----------
-    seq_info       : np.ndarray (N, n_blocks+1) int — seq_builder의 SeqInfo.
+    seq_info       : np.ndarray (N, T) int — task2/..._SeqInfo.npy.
                       각 행 = 샘플 idx의 pseudo-orbit 체인을 구성하는 실제 샘플
                       인덱스 (allow_cross_class=False라면 전부 idx와 같은 클래스).
-    maxlist        : np.ndarray (N, n_blocks) — seq_builder의 MaxList. 체인
-                      각 단계의 raw-feature 거리(pseudo-orbit step error).
+    maxlist        : np.ndarray (N, T-1) — task2/..._MaxList.npy. 체인
+                      각 단계의 d_g 거리(pseudo-orbit step error).
     prob_fc_block0 : Tensor (N, n_class) — block_fc[0] 출력 (전체 샘플).
     labels         : Tensor (N,) — 전체 샘플의 ground-truth 라벨.
     top_k          : int

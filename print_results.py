@@ -79,13 +79,17 @@ def unnormalize(img_tensor, mean, std):
 
 def _collect(model_name, data_name):
     tag = f"{data_name}_{model_name}"
-    acc  = _load_npy(f"Result/{tag}_accuracy.npy",  "accuracy")
+    met  = _load_npy(f"Result/{tag}_metrics.npy")
+    f1   = float(met["f1"])   if met else None
+    loss = float(met["loss"]) if met else None
+    acc  = float(met["acc"]) * 100 if met else _load_npy(
+        f"Result/{tag}_accuracy.npy", "accuracy")   # 구버전 파일 fallback
     eps  = _load_npy(f"Result/{tag}_epsilon.npy",   "epsilon")
     thm  = _load_npy(f"Result/{tag}_theorem.npy")
-    shg  = float(thm["Shg_phi"])           if thm else None
-    lip  = float(thm["Lip_g"])             if thm else None
-    tg   = float(thm["Tg_phi_lower_bound"]) if thm else None
-    return {"acc": acc, "eps": eps, "shg": shg, "lip": lip, "tg": tg}
+    shg  = float(thm["Shg_phi"]) if thm else None
+    lip  = float(thm["Lip_g"])   if thm else None
+    return {"f1": f1, "loss": loss, "acc": acc, "eps": eps,
+            "shg": shg, "lip": lip}
 
 
 def _fmt(val, fmt=".4f", na="—"):
@@ -94,38 +98,41 @@ def _fmt(val, fmt=".4f", na="—"):
 
 def print_table():
     print()
-    print("=" * 72)
-    print("  DS-ResNets — Experiment Results")
-    print("=" * 72)
+    print("=" * 78)
+    print("  DS-ResNets — Experiment Results (Table 1)")
+    print("=" * 78)
 
-    col_headers = f"  {'Model':<18} {'Acc(%)':>7}  {'ε':>8}  {'Shg(φ)':>8}  {'Lip(g)':>8}  {'Tg(φ)≥':>8}"
-    separator   = "  " + "-" * 68
+    col_headers = (f"  {'Model':<14} {'F1':>7} {'Loss':>7} {'Acc(%)':>7}  "
+                   f"{'ε':>10}  {'Shg(φ)':>8}  {'Lip(g)':>8}")
+    separator   = "  " + "-" * 74
 
     for data_name in DATASETS:
-        print(f"\n  ── {data_name} {'─' * (64 - len(data_name))}")
+        print(f"\n  ── {data_name} {'─' * (70 - len(data_name))}")
         print(col_headers)
         print(separator)
         for model_name in MODELS:
-            r   = _collect(model_name, data_name)
-            acc = _fmt(r["acc"], ".2f") if r["acc"] is not None else "—"
+            r = _collect(model_name, data_name)
             if model_name in DS_LAYERS_MAP:
-                row = (f"  {model_name:<18} {acc:>7}  "
-                       f"{_fmt(r['eps'],'.5f'):>8}  "
-                       f"{_fmt(r['shg'],'.4f'):>8}  "
-                       f"{_fmt(r['lip'],'.4f'):>8}  "
-                       f"{_fmt(r['tg'], '.4f'):>8}")
+                row = (f"  {model_name:<14} {_fmt(r['f1']):>7} "
+                       f"{_fmt(r['loss']):>7} {_fmt(r['acc'], '.2f'):>7}  "
+                       f"{_fmt(r['eps'], '.3e'):>10}  "
+                       f"{_fmt(r['shg']):>8}  "
+                       f"{_fmt(r['lip']):>8}")
             else:
-                row = (f"  {model_name:<18} {acc:>7}  "
-                       f"{'—':>8}  {'—':>8}  {'—':>8}  {'—':>8}")
+                row = (f"  {model_name:<14} {_fmt(r['f1']):>7} "
+                       f"{_fmt(r['loss']):>7} {_fmt(r['acc'], '.2f'):>7}  "
+                       f"{'—':>10}  {'—':>8}  {'—':>8}")
             print(row)
 
     print()
     print("  Columns (DS-ResNet only):")
-    print("    ε      : expansive constant (min inter-class block_fc distance)")
-    print("    Shg(φ) : max pseudo-orbit step error across all chains")
-    print("    Lip(g) : spectral norm of block_fc weights (max over blocks)")
-    print("    Tg(φ)≥ : theorem lower bound  Tg ≥ Shg / Lip")
-    print("=" * 72)
+    print("    ε      : g-expansive constant (min over cross-class pairs of")
+    print("             max over blocks of d_g)")
+    print("    Shg(φ) : g-shadowing constant estimate  delta*(eps0) / eps0")
+    print("    Lip(g) : max block_fc spectral norm × softmax correction")
+    print("    topological g-stable — 정리 1  Shg(φ) ≤ Lip(g)·Tg(φ) 에 따라")
+    print("                           Tg(φ) ≥ Shg / Lip 로 직접 계산.")
+    print("=" * 78)
 
 
 # ── 2. Image helpers ───────────────────────────────────────────────────────────

@@ -1,22 +1,10 @@
-from functools import partial
-from typing import Any, Callable, List, Optional, Type, Union
-import sys
+from typing import Callable, List, Optional, Type, Union
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-from torchvision.transforms._presets import ImageClassification
-from torchvision.utils import _log_api_usage_once
-from torchvision.models._api import Weights, WeightsEnum
-from torchvision.models._meta import _IMAGENET_CATEGORIES
-from torchvision.models._utils import _ovewrite_named_param, handle_legacy_interface
-
-
-__all__ = [
-    "ResNet"
-]
+__all__ = ["ResNet", "Bottleneck", "BasicBlock", "Clipper"]
 
 
 class Clipper:
@@ -183,7 +171,6 @@ class ResNet(nn.Module):
         use_50176:   bool = False,
     ) -> None:
         super().__init__()
-        _log_api_usage_once(self)
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -294,13 +281,14 @@ class ResNet(nn.Module):
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-        x = self.clip1(x).to(DEVICE)
+        # Clipper는 입력 텐서와 같은 device에 결과를 생성하므로 .to() 불필요
+        x = self.clip1(x)
         x = self.layer1(x)
-        x = self.clip2(x).to(DEVICE)
+        x = self.clip2(x)
         x = self.layer2(x)
-        x = self.clip3(x).to(DEVICE)
+        x = self.clip3(x)
         x = self.layer3(x)
-        x = self.clip2(x).to(DEVICE)
+        x = self.clip2(x)
         x = self.layer4(x)
         if self.use_50176:
             x = self.dim_reducer(x)  # (B, 2048, 7, 14) → (B, 512, 7, 14)
@@ -312,28 +300,4 @@ class ResNet(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self._forward_impl(x)
-
-
-def _resnet(
-    block: Type[Union[BasicBlock, Bottleneck]],
-    layers: List[int],
-    weights: Optional[WeightsEnum],
-    progress: bool,
-    **kwargs: Any,
-) -> ResNet:
-    if weights is not None:
-        _ovewrite_named_param(kwargs, "num_classes", len(weights.meta["categories"]))
-
-    model = ResNet(block, layers, **kwargs)
-
-    if weights is not None:
-        model.load_state_dict(weights.get_state_dict(progress=progress, check_hash=True))
-
-    return model
-
-
-_COMMON_META = {
-    "min_size": (1, 1),
-    "categories": _IMAGENET_CATEGORIES,
-}
 
