@@ -94,7 +94,10 @@ def _collect(model_name, data_name):
 
 
 def _fmt(val, fmt=".4f", na="—"):
-    return f"{val:{fmt}}" if val is not None else na
+    # None 또는 nan(관측 공간 붕괴로 Sh_g 계산 불가 등)은 '—'로 표기
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return na
+    return f"{val:{fmt}}"
 
 
 def print_table():

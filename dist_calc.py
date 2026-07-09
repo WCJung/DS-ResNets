@@ -85,6 +85,12 @@ def run_analysis(data_name, model_tag, layers, space='prob', n_samples=None,
     print(f"      클래스 {eps_res['class_a']} vs {eps_res['class_b']}  |  "
           f"샘플 {eps_res['sample_a']} <-> {eps_res['sample_b']}  |  "
           f"블록 {eps_res['block']}")
+    if eps_res['epsilon'] == 0.0:
+        print("[경고] g-expansive 상수가 정확히 0 — 서로 다른 클래스의 두 샘플이 "
+              "모든 블록에서 동일한 g 출력을 가집니다 (관측 공간 붕괴).")
+        print("       원인: softmax 포화(space='prob') 또는 block_fc probe 미학습. "
+              "--space logit으로 재시도하거나 main.py --use-block-fc로 "
+              "probe를 재학습하세요.")
 
     # ── 2) g-shadowing: pseudo-orbit → 추적 → Sh_g ───────────────────────
     mode = "depth-consistent" if depth_consistent else "legacy(블록0→1)"
@@ -105,14 +111,21 @@ def run_analysis(data_name, model_tag, layers, space='prob', n_samples=None,
         "Sh_g": sh_res["Sh_g"], "eps0": sh_res["eps0"],
         "delta_star": sh_res["delta_star"], "curve": sh_res["curve"],
         "space": space, "depth_consistent": depth_consistent,
+        "degenerate": sh_res["degenerate"],
     })
-    print(f"[Sh] Sh_g 추정 곡선  (delta*(eps) = eps-추적 실패 체인이 생기기 "
-          "직전까지의 delta):")
-    print(f"      {'eps':>12}  {'delta*':>12}  {'delta*/eps':>12}")
-    for e, d, r in sh_res["curve"]:
-        print(f"      {e:>12.6f}  {d:>12.6f}  {r:>12.6f}")
-    print(f"[Sh] Sh_g = {sh_res['Sh_g']:.4f}  "
-          f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
+    if sh_res["degenerate"]:
+        print(f"[Sh] 경고: {sh_res['note']}")
+        print("[Sh] Sh_g = nan  (계산 불가 — Table 1에는 '—'로 표기)")
+    else:
+        if sh_res["note"]:
+            print(f"[Sh] 참고: {sh_res['note']}")
+        print(f"[Sh] Sh_g 추정 곡선  (delta*(eps) = eps-추적 실패 체인이 생기기 "
+              "직전까지의 delta):")
+        print(f"      {'eps':>12}  {'delta*':>12}  {'delta*/eps':>12}")
+        for e, d, r in sh_res["curve"]:
+            print(f"      {e:>12.6f}  {d:>12.6f}  {r:>12.6f}")
+        print(f"[Sh] Sh_g = {sh_res['Sh_g']:.4f}  "
+              f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
 
     # ── 3) Lip(g) ────────────────────────────────────────────────────────
     multifc_ckpt = f"{model_tag}_{data_name}_multifc.pt"
@@ -164,8 +177,11 @@ def run_analysis(data_name, model_tag, layers, space='prob', n_samples=None,
     print(f"  g-expansive  : {eps_res['epsilon']:.6e}   "
           f"(class {eps_res['class_a']} vs {eps_res['class_b']}, "
           f"block {eps_res['block']})")
-    print(f"  g-shadowing  : {sh_res['Sh_g']:.4f}   "
-          f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
+    if sh_res["degenerate"]:
+        print("  g-shadowing  : —   (관측 공간 붕괴 — space 변경 또는 probe 재학습 필요)")
+    else:
+        print(f"  g-shadowing  : {sh_res['Sh_g']:.4f}   "
+              f"(eps0={sh_res['eps0']:.4f}, delta*={sh_res['delta_star']:.4f})")
     print(f"  Lip(g)       : "
           f"{_f(lip_res['Lip_g'] if lip_res else None, '.4f')}")
     print("-" * 70)

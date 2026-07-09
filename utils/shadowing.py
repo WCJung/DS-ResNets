@@ -135,29 +135,56 @@ def shadowing_constant(step_err, eps, quantiles=(0.0, 0.01, 0.05, 0.10, 0.25, 0.
     -------
     dict:
       Sh_g       : float — 가장 작은 eps 그리드점에서의 delta*/eps (대표 추정치)
+                   관측 공간이 붕괴하면 nan (degenerate=True)
       eps0       : float — 그 eps 값
       delta_star : float — 그 지점의 delta*
       curve      : list of (eps, delta_star, ratio)
       delta_per_chain, eps_per_chain : np.ndarray — 원자료
+      degenerate : bool  — True면 모든 추적 오차가 0이라 Sh_g 정의 불가
+      note       : str 또는 None — 그리드 폴백 등 참고 사항
     """
     step_err = np.asarray(step_err, dtype=float)
     eps = np.asarray(eps, dtype=float)
     delta = step_err.max(axis=1)                       # 체인별 최대 스텝 오차
 
-    curve = []
-    for q in sorted(quantiles):
-        e = float(np.quantile(eps, q))
-        if e <= 0:
-            continue                                   # 0으로 나눌 수 없는 지점 제외
-        not_shadowed = eps > e
-        if not_shadowed.any():
-            d_star = float(delta[not_shadowed].min())
-        else:
-            d_star = float(delta.max())                # 전부 추적됨 → 관측 최대 delta
-        curve.append((e, d_star, d_star / e))
+    def _curve_from(grid):
+        curve = []
+        for e in grid:
+            if e <= 0:
+                continue                               # 0으로 나눌 수 없는 지점 제외
+            not_shadowed = eps > e
+            if not_shadowed.any():
+                d_star = float(delta[not_shadowed].min())
+            else:
+                d_star = float(delta.max())            # 전부 추적됨 → 관측 최대 delta
+            curve.append((e, d_star, d_star / e))
+        return curve
 
+    qs = sorted(quantiles)
+    curve = _curve_from(float(np.quantile(eps, q)) for q in qs)
+
+    # 폴백: 지정 분위수가 전부 0에 걸렸지만 양수 추적 오차가 존재하면
+    # (부분 붕괴 — 0이 과반인 경우 등) 양수 부분집합의 분위수로 그리드 재구성
+    note = None
     if not curve:
-        raise ValueError("유효한 eps 그리드점이 없습니다 (추적 오차가 전부 0?).")
+        pos = eps[eps > 0]
+        if pos.size:
+            curve = _curve_from(float(np.quantile(pos, q)) for q in qs)
+            zero_pct = 100.0 * (1 - pos.size / eps.size)
+            note = (f"추적 오차의 {zero_pct:.1f}%가 0 — 양수 부분집합"
+                    f"({pos.size}/{eps.size}개 체인) 분위수로 그리드 대체")
+
+    # 완전 붕괴: 모든 체인의 추적 오차가 0 → Sh_g 정의 불가.
+    # 예외 대신 nan을 반환해 호출측(run_all 등)이 다음 조합으로 진행하게 한다.
+    if not curve:
+        return {
+            "Sh_g": float('nan'), "eps0": float('nan'),
+            "delta_star": float('nan'), "curve": [],
+            "delta_per_chain": delta, "eps_per_chain": eps,
+            "degenerate": True,
+            "note": ("모든 추적 오차가 0 — 관측 공간 붕괴. "
+                     "--space logit으로 재시도하거나 block_fc probe를 재학습하세요."),
+        }
 
     e0, d0, r0 = curve[0]
     return {
@@ -167,6 +194,8 @@ def shadowing_constant(step_err, eps, quantiles=(0.0, 0.01, 0.05, 0.10, 0.25, 0.
         "curve": curve,
         "delta_per_chain": delta,
         "eps_per_chain": eps,
+        "degenerate": False,
+        "note": note,
     }
 
 
