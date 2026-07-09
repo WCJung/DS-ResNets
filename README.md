@@ -49,11 +49,14 @@ python main.py --model resnet18   --data MNIST     # accuracy baseline only
 | `--data` | `MNIST` | `MNIST` / `CIFAR10` / `IMAGENET10` (Imagenette) |
 | `--use-block-fc / --no-use-block-fc` | on | train per-block linear probes (required for analysis) |
 | `--use-avgpool / --no-use-avgpool` | on | avgpool before the main fc |
+| `--save-raw-feat / --no-save-raw-feat` | off | also dump raw per-block features (D=200,704) for legacy `--space feat`. Off by default — accumulating all blocks in RAM needs ~128 GB on `*50` models and was the OOM cause. |
 | `--epochs / --lr / --batch-size / --seed` | 100 / 5e-5 / 64 / 13 | training hyperparameters |
 
 Outputs: `{model}_{data}.pt`, `{model}_{data}_multifc.pt`,
 `Result/{data}_{model}_metrics.npy` (F1/Loss/Acc),
-`prob/`, `prob_fc/`, `pix/.../{data}_label.pt`.
+`prob_fc/`, `pix/.../{data}_label.pt` (and `prob/` only with `--save-raw-feat`).
+The block-wise fc logits in `prob_fc/` are all the `--space prob`/`logit`
+analysis needs; the raw `prob/` features feed only the legacy `--space feat`.
 
 ---
 

@@ -10,9 +10,10 @@ main.py — 백본 학습 + 블록별 출력 추출.
   {model}_{data}.pt              — 백본 best 체크포인트 (테스트 손실 기준)
   {model}_{data}_multifc.pt      — 블록별 fc 포함 체크포인트 (--use-block-fc)
   Result/{data}_{model}_metrics.npy — F1/Loss/Acc (Table 1의 성능 열)
-  prob/{data}/{model}/           — 블록별 raw 특징 (N, 200704)
-  prob_fc/{data}/{model}/        — 블록별 fc logit (N, n_class)
+  prob_fc/{data}/{model}/        — 블록별 fc logit (N, n_class) — 분석 입력
   pix/resnet/{data}/{model}/test/{data}_label.pt — 테스트 라벨
+  prob/{data}/{model}/           — 블록별 raw 특징 (N, 200704) — --save-raw-feat
+                                   지정 시에만. legacy space='feat' 전용, OOM 주의.
 """
 import argparse
 import sys
@@ -44,6 +45,10 @@ def parse_args():
                    default=True, help='블록별 fc(linear probe) 학습/추출')
     p.add_argument('--use-avgpool', action=argparse.BooleanOptionalAction,
                    default=True, help='main fc 앞 avgpool (fc 입력 2048)')
+    p.add_argument('--save-raw-feat', action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help='블록별 raw 특징(D=200,704) 추출·저장 — legacy '
+                        "space='feat' 전용, 메모리 대량 사용 (기본 꺼짐)")
     return p.parse_args()
 
 
@@ -103,12 +108,11 @@ if __name__ == '__main__':
         torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
 
-    print("블록별 raw 특징 추출 중...")
-    feats, labels = extract_block_outputs(extractor, testloader, device)
-    feat_dir = save_block_outputs(feats, "prob", args.data, args.model)
-    del feats
-    pix_dir = save_labels(labels, args.data, args.model)
-    print(f"raw 특징 → {feat_dir}/  |  라벨 → {pix_dir}/")
+    # 분석 파이프라인(space=prob/logit)은 블록 fc logit(D=n_class)만 사용한다.
+    # raw 특징(D=200,704)은 legacy space='feat' 전용이며 모든 블록을 CPU RAM에
+    # 누적해 ds_resnet50(16블록)에서 ~128GB를 요구, OOM의 원인이었다. 따라서
+    # 값싼 block_fc 추출을 먼저 하고(라벨도 여기서 확보), raw 추출은 opt-in으로.
+    labels = None
 
     if args.use_block_fc:
         print("블록별 fc 학습 중...")
@@ -116,10 +120,25 @@ if __name__ == '__main__':
         torch.save(extractor.state_dict(), f"{ckpt_name}_multifc.pt")
 
         print("블록별 fc logit 추출 중...")
-        logits, _ = extract_block_outputs(extractor, testloader, device,
-                                          use_block_fc=True)
+        logits, labels = extract_block_outputs(extractor, testloader, device,
+                                               use_block_fc=True)
         fc_dir = save_block_outputs(logits, "prob_fc", args.data, args.model)
         print(f"fc logit → {fc_dir}/")
+
+    if args.save_raw_feat:
+        print("블록별 raw 특징 추출 중 (D=200,704 — 메모리 대량 사용)...")
+        feats, labels_raw = extract_block_outputs(extractor, testloader, device)
+        feat_dir = save_block_outputs(feats, "prob", args.data, args.model)
+        del feats
+        labels = labels if labels is not None else labels_raw
+        print(f"raw 특징 → {feat_dir}/  (space='feat' 전용)")
+
+    if labels is not None:
+        pix_dir = save_labels(labels, args.data, args.model)
+        print(f"라벨 → {pix_dir}/")
+    else:
+        print("[안내] --no-use-block-fc 且 --no-save-raw-feat: 분석용 출력·라벨 "
+              "없음 (정확도 baseline만). 분석하려면 --use-block-fc로 재실행하세요.")
 
     print(f"완료. 다음 단계:")
     print(f"  python dist_calc.py   --model {args.model} --data {args.data}"

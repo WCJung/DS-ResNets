@@ -51,6 +51,7 @@ BATCH_SIZE        = 64
 
 USE_BLOCK_FC      = True      # DS models: train per-block linear probes
 USE_AVGPOOL       = True      # DS models: avgpool before main fc
+SAVE_RAW_FEAT     = False     # raw 특징(D=200,704) 저장 — space='feat' 전용, OOM 주의
 SPACE             = 'prob'    # d_g 관측 공간: softmax 확률 (dist_calc 참조)
 ALLOW_CROSS_CLASS = False     # pseudo-orbit: same-class neighbors only
 RUN_ENTROPY       = True      # 안정성 분석 후 FTTE(entropy_calc)도 실행
@@ -162,14 +163,10 @@ def step_train_extract(model_name, data_name, device,
         torch.load(f"{ckpt_name}.pt", map_location=device), strict=False)
     extractor.to(device)
 
-    _section("Extracting raw block features + labels ...")
-    t0 = time.time()
-    feats, labels = extract_block_outputs(extractor, testloader, device)
-    feat_dir = save_block_outputs(feats, "prob", data_name, model_name)
-    del feats
-    pix_dir = save_labels(labels, data_name, model_name)
-    print(f"  [{G}done{RST}] raw features -> {feat_dir}/  |  labels -> {pix_dir}/  "
-          f"{fmt_time(time.time() - t0)}")
+    # 값싼 block_fc 추출(D=n_class)을 먼저 — 라벨도 여기서 확보. raw 특징
+    # (D=200,704)은 legacy space='feat' 전용이며 모든 블록을 CPU RAM에 누적해
+    # *50 모델(16블록)에서 ~128GB OOM을 유발하므로 SAVE_RAW_FEAT로 opt-in.
+    labels = None
 
     if USE_BLOCK_FC:
         _section("Training block-wise linear probes ...")
@@ -177,11 +174,25 @@ def step_train_extract(model_name, data_name, device,
         train_block_fc(extractor, trainloader, device, epochs=5)
         torch.save(extractor.state_dict(), f"{ckpt_name}_multifc.pt")
 
-        logits, _ = extract_block_outputs(extractor, testloader, device,
-                                          use_block_fc=True)
+        logits, labels = extract_block_outputs(extractor, testloader, device,
+                                               use_block_fc=True)
         fc_dir = save_block_outputs(logits, "prob_fc", data_name, model_name)
         print(f"  [{G}done{RST}] block_fc outputs -> {fc_dir}/  "
               f"{fmt_time(time.time() - t0)}")
+
+    if SAVE_RAW_FEAT:
+        _section("Extracting raw block features (D=200,704, heavy) ...")
+        t0 = time.time()
+        feats, labels_raw = extract_block_outputs(extractor, testloader, device)
+        feat_dir = save_block_outputs(feats, "prob", data_name, model_name)
+        del feats
+        labels = labels if labels is not None else labels_raw
+        print(f"  [{G}done{RST}] raw features -> {feat_dir}/  "
+              f"{fmt_time(time.time() - t0)}")
+
+    if labels is not None:
+        pix_dir = save_labels(labels, data_name, model_name)
+        print(f"  [{G}done{RST}] labels -> {pix_dir}/")
 
 
 # ── Step 2: stability analysis ─────────────────────────────────────────────────
