@@ -120,6 +120,116 @@ def _sample_eps_grid(traj, quantiles, n_probe=512, seed=13):
     return [v for v in vals if v > 0]
 
 
+@torch.no_grad()
+def find_sm_band(traj, m, rows=None, chunk=1024, device=None,
+                 iters=12, rtol=0.005, verbose=True):
+    """s_T(eps) = m 이 유지되는 eps 대역 [eps_lo, eps_hi)를 이분탐색으로 추정.
+
+    s_T(eps)는 eps에 대해 단조 비증가이므로 두 경계를 각각 이분탐색한다:
+      eps_lo = inf{ eps : s_T(eps) <= m }     (s > m  →  s = m 진입점)
+      eps_hi = inf{ eps : s_T(eps) <  m }     (s = m  →  s < m 이탈점)
+    eps_lo < eps_hi 이면 그 사이에서 s_T = m — Proposition 1 창
+    [intra_max, cross_min)의 경험적 대응물이다 (Prop.1은 충분조건이라
+    창이 없어도 이 대역은 존재할 수 있다).
+
+    greedy packing이 s_g^T의 하한 추정이라 경계는 근사값이며, 대역이
+    비어 있으면 s_T가 m을 건너뛴 것 (클래스 스케일 구조가 겹침).
+
+    Parameters
+    ----------
+    rows : ftte_report()["rows"] — 있으면 (eps, s) 캐시/초기 브래킷으로 재사용
+
+    Returns
+    -------
+    dict:
+      exists  : bool  — s_T = m 대역이 발견되었는가
+      eps_lo  : float — 대역 시작 (s가 m으로 떨어지는 지점)
+      eps_hi  : float — 대역 끝   (s가 m 아래로 떨어지는 지점)
+      width   : float — eps_hi - eps_lo (exists=False면 0)
+      s_mid   : int 또는 None — 대역 중점에서 검증한 s_T (exists 시 m이어야 정상)
+      s_edges : (int, int) — 두 경계 바깥쪽 s 값 (건너뛴 경우 진단용)
+      n_evals : int — 추가로 수행한 greedy 평가 횟수
+    """
+    if device is not None:
+        traj = traj.to(device)
+
+    cache = {}
+    if rows:
+        for r in rows:
+            cache[round(float(r["eps"]), 12)] = int(r["s"])
+    n_evals = [0]
+
+    def s_at(eps):
+        key = round(float(eps), 12)
+        if key not in cache:
+            cache[key] = separated_set_size(traj, key, chunk=chunk)
+            n_evals[0] += 1
+        return cache[key]
+
+    def boundary(thresh):
+        """inf{ eps : s_T(eps) <= thresh } 의 브래킷 (lo, hi)을 반환.
+
+        s(lo) > thresh, s(hi) <= thresh 를 유지하며 좁힌다.
+        """
+        known = sorted(cache.items())
+        lo = max((e for e, s in known if s > thresh), default=0.0)
+        hi = min((e for e, s in known if s <= thresh), default=None)
+        if hi is None:                          # 그리드가 위쪽을 못 덮음 → 배가 탐색
+            hi = max((e for e, _ in known), default=1.0) or 1.0
+            for _ in range(40):
+                hi *= 2.0
+                if s_at(hi) <= thresh:
+                    break
+            else:
+                return None                     # 이 스케일까지도 s > thresh
+        for _ in range(iters):
+            if hi - lo <= rtol * hi:
+                break
+            mid = 0.5 * (lo + hi)
+            if s_at(mid) <= thresh:
+                hi = mid
+            else:
+                lo = mid
+        return lo, hi
+
+    b_enter = boundary(m)                       # s > m → s <= m
+    if b_enter is None:                         # 모든 스케일에서 s > m (비정상)
+        return {"exists": False, "eps_lo": float('nan'), "eps_hi": float('nan'),
+                "width": 0.0, "s_mid": None, "s_edges": None,
+                "n_evals": n_evals[0]}
+    b_exit = boundary(m - 1)                    # s >= m → s < m
+
+    eps_lo = b_enter[1]                         # s(eps_lo) <= m 확인된 지점
+    eps_hi = b_exit[0] if b_exit is not None else float('inf')
+    s_lo, s_hi = s_at(eps_lo), (s_at(eps_hi) if eps_hi != float('inf') else None)
+
+    exists = (eps_hi > eps_lo) and s_lo == m and (s_hi is None or s_hi >= m)
+    s_mid = None
+    if exists and eps_hi != float('inf'):
+        s_mid = s_at(0.5 * (eps_lo + eps_hi))
+        exists = s_mid == m
+
+    if verbose:
+        if exists:
+            w = eps_hi - eps_lo
+            print(f"  [FTTE] s_T = m 대역: eps ∈ [{eps_lo:.6f}, {eps_hi:.6f})  "
+                  f"폭 {w:.6f}  (중점 s_T = {s_mid if s_mid is not None else m}, "
+                  f"greedy 평가 {n_evals[0]}회)")
+        else:
+            around = (s_at(b_enter[0]), s_at(b_enter[1]))
+            print(f"  [FTTE] s_T = m 대역 없음 — 경계 부근에서 s_T가 "
+                  f"{around[0]} → {around[1]} 로 m={m} 을 건너뜀 "
+                  f"(greedy 평가 {n_evals[0]}회)")
+
+    return {"exists": exists,
+            "eps_lo": eps_lo if exists else float('nan'),
+            "eps_hi": eps_hi if exists else float('nan'),
+            "width": (eps_hi - eps_lo) if exists else 0.0,
+            "s_mid": s_mid,
+            "s_edges": (s_at(b_enter[0]), s_at(b_enter[1])),
+            "n_evals": n_evals[0]}
+
+
 def ftte_report(traj, labels, eps_list=None, chunk=1024, device=None,
                 quantiles=(0.001, 0.01, 0.05, 0.10, 0.25, 0.50), verbose=True):
     """FTTE 전체 리포트: eps 그리드별 s_T / h_T / Δh_T + Proposition 1 진단.

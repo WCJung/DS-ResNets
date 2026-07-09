@@ -9,6 +9,8 @@ d_g^T(x,y) = max_t d(g_t(phi^t x), g_t(phi^t y)) 를 사용해:
      그리고 s = m이 이론적으로 보장되는 eps 창.
   2) eps 그리드별  s_T(eps) / h_T(eps) / Δh_T(eps)  (greedy packing 하한)
      — Proposition 2의 부호 해석(s vs m) 포함.
+  3) s_T = m 대역 [eps_lo, eps_hi) 이분탐색 — 궤적 구조가 클래스 구조와
+     정확히 일치하는 스케일 대역 (Prop.1 창의 경험적 대응물, --no-band로 끔).
 
 실행 예:
   python entropy_calc.py --model ds_resnet18 --data MNIST
@@ -24,7 +26,7 @@ import os
 import numpy as np
 
 from models.models import DS_MODELS, ds_layers
-from utils.entropy import ftte_report
+from utils.entropy import find_sm_band, ftte_report
 from utils.norms import init_random
 from utils.trajectory import load_trajectory
 
@@ -40,6 +42,8 @@ def parse_args():
                    help="쉼표로 구분한 eps 그리드 (예: 0.05,0.1,0.2). "
                         "생략 시 d_g^T 분위수 + Prop.1 창 중점으로 자동 구성")
     p.add_argument('--n-samples', type=int, default=None)
+    p.add_argument('--band', action=argparse.BooleanOptionalAction, default=True,
+                   help="s_T = m 대역 [eps_lo, eps_hi) 이분탐색 (기본 켜짐)")
     p.add_argument('--chunk', type=int, default=1024)
     p.add_argument('--device', default=None, help="'cuda' 지정 시 GPU 계산")
     p.add_argument('--seed', type=int, default=13)
@@ -47,7 +51,8 @@ def parse_args():
 
 
 def run_entropy(data_name, model_tag, layers, space='prob', eps_list=None,
-                n_samples=None, chunk=1024, device=None, seed=13):
+                n_samples=None, find_band=True, chunk=1024, device=None,
+                seed=13):
     """FTTE 파이프라인. 결과 dict 반환 및 Result/에 저장."""
     n_blocks = sum(layers)
     tag = f"{data_name}_{model_tag}"
@@ -61,6 +66,13 @@ def run_entropy(data_name, model_tag, layers, space='prob', eps_list=None,
 
     rep = ftte_report(traj, labels, eps_list=eps_list, chunk=chunk,
                       device=device)
+
+    band = None
+    if find_band and rep["rows"]:
+        print("\n[FTTE] s_T = m 대역 탐색 (경계 2개 이분탐색)...")
+        band = find_sm_band(traj, rep["m"], rows=rep["rows"],
+                            chunk=chunk, device=device)
+    rep["sm_band"] = band
 
     # ── 요약 ─────────────────────────────────────────────────────────────
     print()
@@ -88,6 +100,17 @@ def run_entropy(data_name, model_tag, layers, space='prob', eps_list=None,
         print("-" * 70)
         print(f"  대표값 (Prop.1 창 우선): eps={r['eps']:.6f}  s_T={r['s']}  "
               f"h_T={r['h']:.4f}  Δh_T={r['gap']:+.4f}")
+    if band is not None:
+        print("-" * 70)
+        if band["exists"]:
+            print(f"  s_T=m 대역 : eps ∈ [{band['eps_lo']:.6f}, "
+                  f"{band['eps_hi']:.6f})  폭 {band['width']:.6f}")
+            print(f"               이 대역에서 s_T = m = {rep['m']}, Δh_T = 0 — "
+                  f"궤적 구조가 클래스 구조와 일치")
+        else:
+            se = band["s_edges"]
+            print(f"  s_T=m 대역 : 없음 — s_T가 {se[0]} → {se[1]} 로 "
+                  f"m={rep['m']} 을 건너뜀 (클래스 스케일 구조가 겹침)")
     print("=" * 70)
     print("  (s_T는 greedy maximal packing 하한 — 실제 s_g^T(eps) >= 표기값)")
 
@@ -97,6 +120,7 @@ def run_entropy(data_name, model_tag, layers, space='prob', eps_list=None,
         "intra_max": d["intra_max"], "cross_min": d["cross_min"],
         "prop1_window": d["prop1_window"],
         "rows": rep["rows"], "recommended": rep["recommended"],
+        "sm_band": band,
         "space": space,
     })
     print(f"  저장: Result/{tag}_entropy.npy")
@@ -116,6 +140,7 @@ if __name__ == '__main__':
         space=args.space,
         eps_list=eps_list,
         n_samples=args.n_samples,
+        find_band=args.band,
         chunk=args.chunk,
         device=args.device,
         seed=args.seed,
