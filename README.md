@@ -161,6 +161,34 @@ python run_all.py
 python print_results.py
 ```
 
+## IsoLift-ResNeXt — multi-dataset common-state model (experimental)
+
+A second architecture family (`models/isolift.py`): instead of sharing the
+post-stem space, each dataset's **raw input** is lifted isometrically into
+one common state space ℝ^{48×56×56} (= 3·224·224 = 150,528):
+
+| Dataset | E_d (exact isometry, frozen) |
+|---|---|
+| MNIST 1×28×28 | center zero-embed → 56×56, unit-norm 1→48 channel lift |
+| CIFAR10 3×32×32 | center zero-pad → 56×56, semi-orthogonal 1×1 (WᵀW=I₃) |
+| IMAGENET10 3×224×224 | `PixelUnshuffle(4)` (coordinate permutation) |
+
+Pipeline: `x_d → E_d → A_d (domain adapter) → shared ResNeXt backbone
+(stage transitions PixelUnshuffle(2): 48×56² = 192×28² = 768×14²) → GAP →
+domain head`.  Two modes: `provable` (hard spectral constraints, i-ResNet
+style, Lip(αF) ≤ ρ < 1 → invertible blocks, no norm layers / adapters) and
+`performance` (domain-specific BatchNorm + adapters + soft spectral
+penalty).  Loss: Σ CE + λ_geo·(distance-ratio hinge on u₀) + λ_lip·(spectral
+penalty above ρ).
+
+```bash
+python train_isolift.py --mode performance --datasets MNIST,CIFAR10,IMAGENET10
+python train_isolift.py --mode provable --lambda-lip 0
+python test_isolift.py    # isometry / dimension / Lip<ρ smoke test
+```
+
+Outputs: `isolift_{mode}.pt`, `Result/isolift_{mode}_metrics.npy`.
+
 ## Utilities
 
 ```bash
