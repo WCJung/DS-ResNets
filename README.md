@@ -173,9 +173,11 @@ one common state space ℝ^{48×56×56} (= 3·224·224 = 150,528):
 | CIFAR10 3×32×32 | center zero-pad → 56×56, semi-orthogonal 1×1 (WᵀW=I₃) |
 | IMAGENET10 3×224×224 | `PixelUnshuffle(4)` (coordinate permutation) |
 
-Pipeline: `x_d → E_d → A_d (domain adapter) → shared ResNeXt backbone
+Pipeline: `x_d → E_d → A_d (domain adapter) → shared backbone
 (stage transitions PixelUnshuffle(2): 48×56² = 192×28² = 768×14²) → GAP →
-domain head`.  Two modes: `provable` (hard spectral constraints, i-ResNet
+domain head`.  The shared backbone comes in the same three families as the
+DS models (`--family`): `resnet` (width C/4 baseline), `wide` (width C/2 +
+dropout, pre-activation), `resnext` (width C/3, grouped 3×3).  Two modes: `provable` (hard spectral constraints, i-ResNet
 style, Lip(αF) ≤ ρ < 1 → invertible blocks, no norm layers / adapters) and
 `performance` (domain-specific BatchNorm + adapters + soft spectral
 penalty).  Loss: Σ CE + λ_geo·(distance-ratio hinge on u₀) + λ_lip·(spectral

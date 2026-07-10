@@ -89,25 +89,28 @@ def main():
     print(f"    geo(adapter)={float(g):.4f}  geo(등거리)={float(g_iso):.1e}  "
           f"lip_penalty={float(lp):.5f}  provable branch Lip<1: OK")
 
-    # ── 5. 공동 학습 1 step ─────────────────────────────────────────────
-    print("[5] 두 모드 forward/backward 1 step")
+    # ── 5. 3계열 x 2모드 forward/backward 1 step ─────────────────────────
+    print("[5] 3계열(resnet/wide/resnext) x 2모드 forward/backward 1 step")
+    from models.isolift import ISOLIFT_FAMILIES
     fake = {"MNIST": torch.randn(4, 1, 28, 28),
             "CIFAR10": torch.randn(4, 3, 32, 32),
             "IMAGENET10": torch.randn(2, 3, 224, 224)}
-    for mode in ("performance", "provable"):
-        m = IsoLiftNet(domains=DOMAINS, layers=(1, 1, 1), mode=mode)
-        opt = torch.optim.Adam([p for p in m.parameters() if p.requires_grad],
-                               lr=1e-4)
-        loss = 0.0
-        for d, x in fake.items():
-            logits, u0 = m(x, d, return_u0=True)
-            assert logits.shape == (x.shape[0], 10)
-            y = torch.randint(0, 10, (x.shape[0],))
-            loss = loss + torch.nn.functional.cross_entropy(logits, y)
-        loss = loss + 0.01 * lipschitz_penalty(m)
-        loss.backward()
-        opt.step()
-        print(f"    {mode:<12} loss={float(loss):.4f}  OK")
+    for family in ISOLIFT_FAMILIES:
+        for mode in ("performance", "provable"):
+            m = IsoLiftNet(domains=DOMAINS, layers=(1, 1, 1), mode=mode,
+                           family=family)
+            opt = torch.optim.Adam(
+                [p for p in m.parameters() if p.requires_grad], lr=1e-4)
+            loss = 0.0
+            for d, x in fake.items():
+                logits, u0 = m(x, d, return_u0=True)
+                assert logits.shape == (x.shape[0], 10)
+                y = torch.randint(0, 10, (x.shape[0],))
+                loss = loss + torch.nn.functional.cross_entropy(logits, y)
+            loss = loss + 0.01 * lipschitz_penalty(m)
+            loss.backward()
+            opt.step()
+            print(f"    {family:<8} {mode:<12} loss={float(loss):.4f}  OK")
 
     print("\n=== IsoLift-ResNeXt 스모크 테스트 성공 ===")
 

@@ -167,46 +167,70 @@ class DomainAdapter(nn.Module):
 
 # ── 공유 residual block (ResNeXt 병목) ───────────────────────────────────────
 
-class IsoLiftBlock(nn.Module):
-    """u + alpha * F(u),  F: c -> c/3 -> (3x3 grouped, cardinality) -> c.
+# 계열별 병목 구성: (폭 비율, 3x3 grouped 여부, pre-activation, dropout p)
+#   resnet  — DS-ResNets baseline 대응: 폭 C/4, 일반 3x3, post-act
+#   wide    — DS-Wide 대응: 폭 C/2 (2x), dropout 0.3, pre-activation
+#   resnext — 코멘트 명세 그대로: 폭 C/3, 3x3 grouped (cardinality)
+ISOLIFT_FAMILIES = {
+    "resnet":  {"ratio": 4, "grouped": False, "preact": False, "dropout": 0.0},
+    "wide":    {"ratio": 2, "grouped": False, "preact": True,  "dropout": 0.3},
+    "resnext": {"ratio": 3, "grouped": True,  "preact": False, "dropout": 0.0},
+}
 
+
+class IsoLiftBlock(nn.Module):
+    """u + alpha * F(u),  F: c -> c/ratio -> (3x3 [grouped]) -> c.
+
+    family 로 branch 내부를 선택 (ISOLIFT_FAMILIES — DS 3계열과 평행):
+      resnet / wide / resnext.
     provable    : conv = SNConv2d(coef=rho^{1/3}) 3개 -> Lip(F) <= rho < 1
                   (ReLU 는 1-Lipschitz), alpha = 1 고정 -> 블록 가역.
+                  dropout 은 학습 중 1/(1-p) 스케일로 Lip 을 깨므로 제외.
     performance : 일반 conv + DomainNorm2d, alpha 학습 (soft penalty 대상).
+                  wide 계열은 pre-activation(norm -> relu -> conv) 순서.
     """
 
     def __init__(self, channels, domains, cardinality=8,
-                 mode="performance", rho=0.9):
+                 mode="performance", rho=0.9, family="resnext"):
         super().__init__()
-        assert channels % 3 == 0
-        width = channels // 3
-        assert width % cardinality == 0
+        cfg = ISOLIFT_FAMILIES[family]
+        assert channels % cfg["ratio"] == 0
+        width = channels // cfg["ratio"]
+        groups = cardinality if cfg["grouped"] else 1
+        assert width % groups == 0, \
+            f"width {width} 가 cardinality {groups} 로 나누어떨어지지 않음"
         self.mode = mode
+        self.family = family
+        self.preact = cfg["preact"]
 
         if mode == "provable":
             coef = rho ** (1.0 / 3.0)
             self.conv1 = SNConv2d(channels, width, 1, coef=coef)
             self.conv2 = SNConv2d(width, width, 3, padding=1,
-                                  groups=cardinality, coef=coef)
+                                  groups=groups, coef=coef)
             self.conv3 = SNConv2d(width, channels, 1, coef=coef)
             self.norms = None
+            self.drop = None
             self.register_buffer("alpha", torch.tensor(1.0))
         else:
             self.conv1 = nn.Conv2d(channels, width, 1)
-            self.conv2 = nn.Conv2d(width, width, 3, padding=1,
-                                   groups=cardinality)
+            self.conv2 = nn.Conv2d(width, width, 3, padding=1, groups=groups)
             self.conv3 = nn.Conv2d(width, channels, 1)
-            self.norms = nn.ModuleList([
-                DomainNorm2d(width, domains),
-                DomainNorm2d(width, domains),
-                DomainNorm2d(channels, domains),
-            ])
+            if self.preact:      # norm 은 conv "앞" 채널 크기
+                dims = (channels, width, width)
+            else:                # norm 은 conv "뒤" 채널 크기
+                dims = (width, width, channels)
+            self.norms = nn.ModuleList(
+                [DomainNorm2d(c, domains) for c in dims])
+            self.drop = (nn.Dropout(cfg["dropout"])
+                         if cfg["dropout"] > 0 else None)
             self.alpha = nn.Parameter(torch.tensor(1.0))
 
     def branch_convs(self):
         return (self.conv1, self.conv2, self.conv3)
 
-    def branch(self, u, domain):
+    def _post(self, u, domain):
+        """conv -> norm -> relu 순서 (resnet / resnext)."""
         out = self.conv1(u)
         if self.norms is not None:
             out = self.norms[0](out, domain)
@@ -220,6 +244,25 @@ class IsoLiftBlock(nn.Module):
             out = self.norms[2](out, domain)
         return out
 
+    def _pre(self, u, domain):
+        """norm -> relu -> conv 순서 + dropout (wide, DS-Wide 와 동일 구조)."""
+        out = u
+        if self.norms is not None:
+            out = self.norms[0](out, domain)
+        out = self.conv1(F.relu(out))
+        if self.norms is not None:
+            out = self.norms[1](out, domain)
+        out = self.conv2(F.relu(out))
+        if self.drop is not None:
+            out = self.drop(out)
+        if self.norms is not None:
+            out = self.norms[2](out, domain)
+        out = self.conv3(F.relu(out))
+        return out
+
+    def branch(self, u, domain):
+        return self._pre(u, domain) if self.preact else self._post(u, domain)
+
     def forward(self, u, domain):
         return u + self.alpha * self.branch(u, domain)
 
@@ -231,14 +274,18 @@ class IsoLiftNet(nn.Module):
 
     def __init__(self, domains=("MNIST", "CIFAR10", "IMAGENET10"),
                  n_classes=10, layers=(3, 3, 3), cardinality=8,
-                 mode="performance", rho=0.9, adapter_beta=0.1):
+                 mode="performance", rho=0.9, adapter_beta=0.1,
+                 family="resnext"):
         super().__init__()
         assert mode in ("provable", "performance")
+        assert family in ISOLIFT_FAMILIES, \
+            f"family 는 {list(ISOLIFT_FAMILIES)} 중 하나: {family}"
         unknown = [d for d in domains if d not in LIFTS]
         assert not unknown, f"지원하지 않는 도메인: {unknown}"
         self.domains = tuple(domains)
         self.mode = mode
         self.rho = rho
+        self.family = family
 
         self.lifts = nn.ModuleDict({d: LIFTS[d]() for d in self.domains})
         for p in self.lifts.parameters():
@@ -253,7 +300,8 @@ class IsoLiftNet(nn.Module):
 
         self.stages = nn.ModuleList([
             nn.ModuleList([
-                IsoLiftBlock(c, self.domains, cardinality, mode, rho)
+                IsoLiftBlock(c, self.domains, cardinality, mode, rho,
+                             family=family)
                 for _ in range(n)])
             for c, n in zip(STAGE_CHANNELS, layers)])
         self.shuffle = nn.PixelUnshuffle(2)      # 등거리 stage 전이

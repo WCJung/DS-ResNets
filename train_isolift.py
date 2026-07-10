@@ -17,8 +17,10 @@ train_isolift.py — IsoLift-ResNeXt 멀티 데이터셋 공동 학습.
       --scheduler none --warmup-epochs 0 --epochs 100 --early-stop 20 \
       --label-smoothing 0
 산출물:
-  isolift_{mode}.pt                    — best 평균 정확도 체크포인트
-  Result/isolift_{mode}_metrics.npy   — 도메인별 acc 이력
+  isolift_{family}_{mode}.pt                  — best 평균 정확도 체크포인트
+  Result/isolift_{family}_{mode}_metrics.npy — 도메인별 acc 이력
+
+backbone 계열은 --family {resnet,wide,resnext} 로 선택 (DS 3계열과 평행).
 """
 import argparse
 import itertools
@@ -74,6 +76,11 @@ def parse_args():
                    help="쉼표 구분 (기본: 3개 전부)")
     p.add_argument("--mode", default="performance",
                    choices=["performance", "provable"])
+    p.add_argument("--family", default="resnext",
+                   choices=["resnet", "wide", "resnext"],
+                   help="공유 backbone 블록 계열 (DS 3계열과 평행): "
+                        "resnet=폭 C/4 baseline / wide=폭 C/2+dropout, "
+                        "pre-act / resnext=폭 C/3 grouped")
     p.add_argument("--layers", default="3,3,3",
                    help="stage 별 블록 수 (쉼표 구분)")
     p.add_argument("--cardinality", type=int, default=8)
@@ -161,9 +168,10 @@ def main():
 
     model = IsoLiftNet(domains=domains, layers=layers,
                        cardinality=args.cardinality, mode=args.mode,
-                       rho=args.rho).to(device)
+                       rho=args.rho, family=args.family).to(device)
     n_param = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[IsoLift] mode={args.mode}  domains={domains}  layers={layers}  "
+    print(f"[IsoLift] family={args.family}  mode={args.mode}  "
+          f"domains={domains}  layers={layers}  "
           f"params={n_param/1e6:.2f}M  device={device}")
 
     train_loaders, test_loaders = {}, {}
@@ -233,13 +241,13 @@ def main():
 
         if avg > best:
             best, best_epoch = avg, epoch
-            torch.save(model.state_dict(), f"isolift_{args.mode}.pt")
+            torch.save(model.state_dict(), f"isolift_{args.family}_{args.mode}.pt")
         elif args.early_stop > 0 and epoch - best_epoch >= args.early_stop:
             print(f"[early stop] {args.early_stop} 에폭 동안 개선 없음 "
                   f"(best = epoch {best_epoch+1}, avg {best*100:.2f}%)")
             break
 
-    np.save(f"Result/isolift_{args.mode}_metrics.npy",
+    np.save(f"Result/isolift_{args.family}_{args.mode}_metrics.npy",
             {"history": history, "best_avg_acc": best,
              "domains": domains, "mode": args.mode, "layers": layers,
              "rho": args.rho, "lambda_geo": args.lambda_geo,
@@ -250,7 +258,7 @@ def main():
              "early_stop": args.early_stop,
              "label_smoothing": args.label_smoothing})
     print(f"완료.  best 평균 acc = {best*100:.2f}%  "
-          f"→ isolift_{args.mode}.pt / Result/isolift_{args.mode}_metrics.npy")
+          f"→ isolift_{args.family}_{args.mode}.pt / Result/isolift_{args.family}_{args.mode}_metrics.npy")
 
 
 if __name__ == "__main__":
