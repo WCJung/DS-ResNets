@@ -9,10 +9,13 @@ train_isolift.py — IsoLift-ResNeXt 멀티 데이터셋 공동 학습.
 224 리사이즈와 다름 — E_d 가 원본 차원에서 등거리 lifting 을 수행):
     MNIST 1x28x28 / CIFAR10 3x32x32 / IMAGENET10(Imagenette) 3x224x224
 
-실행 예:
-  python train_isolift.py --mode performance --datasets MNIST,CIFAR10
-  python train_isolift.py --mode provable --datasets MNIST,CIFAR10,IMAGENET10 \
-      --epochs 60 --lambda-lip 0
+실행 예 (기본값 = 실험 C: AdamW 3e-4 + cosine/warmup5 + ES50 + ls0.1):
+  python train_isolift.py --mode performance
+  python train_isolift.py --mode provable --lr 1e-4 --lambda-lip 0
+  # 실험 A (기존 DS-ResNets Table 1과 동일 조건 — 비교용):
+  python train_isolift.py --optimizer adam --lr 5e-5 --weight-decay 0 \
+      --scheduler none --warmup-epochs 0 --epochs 100 --early-stop 20 \
+      --label-smoothing 0
 산출물:
   isolift_{mode}.pt                    — best 평균 정확도 체크포인트
   Result/isolift_{mode}_metrics.npy   — 도메인별 acc 이력
@@ -83,12 +86,51 @@ def parse_args():
     p.add_argument("--geo-M", type=float, default=2.0)
     p.add_argument("--geo-eps", type=float, default=0.05,
                    help="geometry 쌍 x' = x + eps·N(0,1) 의 eps")
-    p.add_argument("--epochs", type=int, default=30)
-    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--optimizer", default="adamw", choices=["adam", "adamw"])
     p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--weight-decay", type=float, default=0.01,
+                   help="AdamW decoupled weight decay "
+                        "(BN·bias·alpha·beta 등 1차원 파라미터 제외)")
+    p.add_argument("--scheduler", default="cosine", choices=["none", "cosine"])
+    p.add_argument("--warmup-epochs", type=int, default=5,
+                   help="선형 warmup 에폭 수 (cosine 사용 시 권장)")
+    p.add_argument("--epochs", type=int, default=200)
+    p.add_argument("--early-stop", type=int, default=50,
+                   help="평균 정확도가 이 에폭 수 동안 개선 없으면 중단 (0=끔)")
+    p.add_argument("--label-smoothing", type=float, default=0.1)
+    p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--seed", type=int, default=13)
     return p.parse_args()
+
+
+def build_optimizer(model, args):
+    """weight decay 를 2차원 이상 가중치에만 적용 (BN·bias·alpha·beta 제외)."""
+    decay, no_decay = [], []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        (decay if p.ndim >= 2 else no_decay).append(p)
+    groups = [{"params": decay, "weight_decay": args.weight_decay},
+              {"params": no_decay, "weight_decay": 0.0}]
+    if args.optimizer == "adamw":
+        return torch.optim.AdamW(groups, lr=args.lr)
+    return torch.optim.Adam(groups, lr=args.lr)
+
+
+def build_scheduler(optimizer, args):
+    """선형 warmup 후 cosine decay (에폭 단위 step). 'none' 이면 None."""
+    if args.scheduler == "none":
+        return None
+    warm = max(args.warmup_epochs, 0)
+    sched_cos = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(args.epochs - warm, 1))
+    if warm == 0:
+        return sched_cos
+    sched_warm = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1e-2, total_iters=warm)
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer, [sched_warm, sched_cos], milestones=[warm])
 
 
 @torch.no_grad()
@@ -135,13 +177,17 @@ def main():
             num_workers=args.num_workers, pin_memory=True)
         print(f"  {d:<11} train={len(tr):,}  test={len(te):,}")
 
-    optimizer = torch.optim.Adam(
-        [p for p in model.parameters() if p.requires_grad], lr=args.lr)
-    ce = nn.CrossEntropyLoss()
+    optimizer = build_optimizer(model, args)
+    scheduler = build_scheduler(optimizer, args)
+    ce = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     steps = max(len(l) for l in train_loaders.values())
+    print(f"  optim={args.optimizer}  lr={args.lr}  wd={args.weight_decay}  "
+          f"sched={args.scheduler}(warmup {args.warmup_epochs})  "
+          f"epochs={args.epochs}  early_stop={args.early_stop}  "
+          f"label_smoothing={args.label_smoothing}")
 
     os.makedirs("Result", exist_ok=True)
-    history, best = [], 0.0
+    history, best, best_epoch = [], 0.0, 0
 
     for epoch in range(args.epochs):
         iters = {d: itertools.cycle(l) for d, l in train_loaders.items()}
@@ -171,24 +217,38 @@ def main():
                 if torch.is_tensor(loss_geo) else float(loss_geo)
             sums["lip"] += float(loss_lip.detach())
 
+        if scheduler is not None:
+            scheduler.step()
+
         accs = evaluate(model, test_loaders, device)
         avg = sum(accs.values()) / len(accs)
         history.append({"epoch": epoch + 1, "accs": accs,
+                        "lr": optimizer.param_groups[0]["lr"],
                         **{k: v / steps for k, v in sums.items()}})
         acc_str = "  ".join(f"{d}={a*100:.2f}%" for d, a in accs.items())
         print(f"[{epoch+1:03d}/{args.epochs}] cls={sums['cls']/steps:.4f}  "
-              f"geo={sums['geo']/steps:.4f}  lip={sums['lip']/steps:.5f}  |  "
+              f"geo={sums['geo']/steps:.4f}  lip={sums['lip']/steps:.5f}  "
+              f"lr={optimizer.param_groups[0]['lr']:.2e}  |  "
               f"{acc_str}  (avg {avg*100:.2f}%)")
 
         if avg > best:
-            best = avg
+            best, best_epoch = avg, epoch
             torch.save(model.state_dict(), f"isolift_{args.mode}.pt")
+        elif args.early_stop > 0 and epoch - best_epoch >= args.early_stop:
+            print(f"[early stop] {args.early_stop} 에폭 동안 개선 없음 "
+                  f"(best = epoch {best_epoch+1}, avg {best*100:.2f}%)")
+            break
 
     np.save(f"Result/isolift_{args.mode}_metrics.npy",
             {"history": history, "best_avg_acc": best,
              "domains": domains, "mode": args.mode, "layers": layers,
              "rho": args.rho, "lambda_geo": args.lambda_geo,
-             "lambda_lip": args.lambda_lip})
+             "lambda_lip": args.lambda_lip,
+             "optimizer": args.optimizer, "lr": args.lr,
+             "weight_decay": args.weight_decay, "scheduler": args.scheduler,
+             "warmup_epochs": args.warmup_epochs,
+             "early_stop": args.early_stop,
+             "label_smoothing": args.label_smoothing})
     print(f"완료.  best 평균 acc = {best*100:.2f}%  "
           f"→ isolift_{args.mode}.pt / Result/isolift_{args.mode}_metrics.npy")
 
