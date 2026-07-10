@@ -97,6 +97,16 @@ python dist_calc.py --model ds_resnet50 --data CIFAR10 --device cuda
 Outputs: `Result/{data}_{model}_epsilon.npy`, `_shadowing.npy`, `_theorem.npy`,
 `task2/{data}_{model}_{SeqInfo,MaxList,ClassInfo,TraceEps}.npy`.
 
+To dump the actual image pair that attains the g-expansive constant
+(the cross-class pair reported as `class a vs b, block k`):
+
+```bash
+python save_expansive_pair.py --model ds_resnet18 --data MNIST
+```
+
+Saves the two individual PNGs plus an annotated side-by-side figure to
+`Result/expansive_pair/` (any model/data that dist_calc has been run on).
+
 ---
 
 ### 3. Entropy (FTTE) — `entropy_calc.py`
