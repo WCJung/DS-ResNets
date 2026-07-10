@@ -11,12 +11,16 @@ dist_calc.py가 저장한 Result/{DATA}_{model}_epsilon.npy 에는 min-max
 
 를 저장한다. 모델/데이터셋에 무관하게 동작한다 (dist_calc를 먼저 실행할 것).
 
-실행:
+모델/데이터셋 이름은 유연하게 해석된다 (대소문자·하이픈·'ds_' 접두사 생략,
+WRN 표기, imagenet 등 허용):
   python save_expansive_pair.py --model ds_resnet18 --data MNIST
-  python save_expansive_pair.py --model ds_resnet50 --data CIFAR10 --out my_dir
+  python save_expansive_pair.py --model RESNET50    --data cifar10
+  python save_expansive_pair.py --model WRN50       --data imagenet --out my_dir
+  python save_expansive_pair.py --list              # 사용 가능한 조합 출력
 """
 import argparse
 import os
+import sys
 
 import numpy as np
 import torch
@@ -24,8 +28,26 @@ import matplotlib
 matplotlib.use("Agg")               # 디스플레이 없는 서버에서도 저장 가능
 import matplotlib.pyplot as plt
 
-from models.models import DS_MODELS
+from models.models import DS_MODELS, resolve_model_name
 from utils.stubs import load_data
+
+DATASETS = ('MNIST', 'CIFAR10', 'IMAGENET10')
+
+
+def resolve_data_name(name):
+    """유연한 데이터셋명 → 정식 이름 (파일 태그와 일치해야 함).
+
+    'mnist' → 'MNIST', 'cifar'/'CIFAR-10' → 'CIFAR10',
+    'imagenet'/'imagenette' → 'IMAGENET10'
+    """
+    key = name.strip().upper().replace('-', '').replace('_', '')
+    if key == 'MNIST':
+        return 'MNIST'
+    if key in ('CIFAR10', 'CIFAR'):
+        return 'CIFAR10'
+    if key in ('IMAGENET10', 'IMAGENET', 'IMAGENETTE'):
+        return 'IMAGENET10'
+    raise ValueError(f"알 수 없는 데이터셋 '{name}'. 사용 가능: {', '.join(DATASETS)}")
 
 # 화면 표시용 역정규화 통계 (utils/stubs.py의 load_data 정규화 값과 동일해야 함)
 NORM_STATS = {
@@ -38,12 +60,30 @@ NORM_STATS = {
 def parse_args():
     p = argparse.ArgumentParser(
         description="g-expansive 상수를 달성한 이미지 쌍 저장")
-    p.add_argument('--model', default='ds_resnet18', choices=list(DS_MODELS))
+    p.add_argument('--model', default='ds_resnet18',
+                   help="모델명 — 유연 표기 허용 (RESNET18, wrn50, ResNeXt-18 등). "
+                        f"정식 이름: {', '.join(DS_MODELS)}")
     p.add_argument('--data', default='MNIST',
-                   choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
+                   help="데이터셋 — mnist / cifar10 / imagenet(10) 등 유연 표기 허용")
     p.add_argument('--out', default='Result/expansive_pair',
                    help="PNG 저장 디렉토리 (기본 Result/expansive_pair)")
+    p.add_argument('--list', action='store_true',
+                   help="사용 가능한 모델·데이터셋과 분석 완료된 조합을 출력 후 종료")
     return p.parse_args()
+
+
+def print_available():
+    """모델·데이터셋 목록과, epsilon.npy가 존재하는(=바로 뽑을 수 있는) 조합."""
+    print("모델      :", ', '.join(DS_MODELS))
+    print("데이터셋  :", ', '.join(DATASETS))
+    ready = [(d, m) for d in DATASETS for m in DS_MODELS
+             if os.path.exists(f"Result/{d}_{m}_epsilon.npy")]
+    if ready:
+        print("\ndist_calc 완료 — 바로 저장 가능한 조합:")
+        for d, m in ready:
+            print(f"  python save_expansive_pair.py --model {m} --data {d}")
+    else:
+        print("\n(Result/*_epsilon.npy 없음 — dist_calc.py를 먼저 실행하세요)")
 
 
 def unnormalize(img_tensor, mean, std):
@@ -103,11 +143,25 @@ def save_pair(eps_res, test_set, data_name, model_tag, out_dir):
 
 if __name__ == '__main__':
     args = parse_args()
+    if args.list:
+        print_available()
+        sys.exit(0)
+
+    try:
+        model = resolve_model_name(args.model)
+        data = resolve_data_name(args.data)
+    except ValueError as e:
+        sys.exit(f"[에러] {e}")
+    if model != args.model or data != args.data:
+        print(f"[안내] '{args.model}' / '{args.data}' → '{model}' / '{data}' 로 해석")
+    args.model, args.data = model, data
+
     eps_path = f"Result/{args.data}_{args.model}_epsilon.npy"
     if not os.path.exists(eps_path):
-        raise FileNotFoundError(
-            f"{eps_path} 없음 — dist_calc.py를 동일한 --model/--data로 먼저 "
-            "실행하세요.")
+        print(f"[에러] {eps_path} 없음 — dist_calc.py를 동일한 --model/--data로 "
+              "먼저 실행하세요.")
+        print_available()
+        sys.exit(1)
     eps_res = np.load(eps_path, allow_pickle=True).item()
 
     print(f"[expansive] eps = {eps_res['epsilon']:.6e}  |  "
