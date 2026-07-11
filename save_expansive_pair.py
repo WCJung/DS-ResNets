@@ -73,17 +73,31 @@ def parse_args():
 
 
 def print_available():
-    """모델·데이터셋 목록과, epsilon.npy가 존재하는(=바로 뽑을 수 있는) 조합."""
-    print("모델      :", ', '.join(DS_MODELS))
+    """모델·데이터셋 목록과, epsilon.npy가 존재하는(=바로 뽑을 수 있는) 조합.
+
+    Result/ 를 직접 스캔하므로 DS 모델뿐 아니라 IsoLift 태그
+    (run_isolift_analysis / dist_calc 로 분석한 isolift_*)도 나열된다.
+    """
+    print("DS 모델   :", ', '.join(DS_MODELS))
     print("데이터셋  :", ', '.join(DATASETS))
-    ready = [(d, m) for d in DATASETS for m in DS_MODELS
-             if os.path.exists(f"Result/{d}_{m}_epsilon.npy")]
+    print("IsoLift   : isolift_{family}_{mode} 태그 그대로 사용 "
+          "(예: isolift_wide_performance)")
+    ready = []
+    if os.path.isdir("Result"):
+        for f in sorted(os.listdir("Result")):
+            if not f.endswith("_epsilon.npy"):
+                continue
+            for d in DATASETS:
+                if f.startswith(f"{d}_"):
+                    ready.append((d, f[len(d) + 1:-len("_epsilon.npy")]))
+                    break
     if ready:
         print("\ndist_calc 완료 — 바로 저장 가능한 조합:")
         for d, m in ready:
             print(f"  python save_expansive_pair.py --model {m} --data {d}")
     else:
-        print("\n(Result/*_epsilon.npy 없음 — dist_calc.py를 먼저 실행하세요)")
+        print("\n(Result/*_epsilon.npy 없음 — dist_calc.py 또는 "
+              "run_isolift_analysis.py 를 먼저 실행하세요)")
 
 
 def unnormalize(img_tensor, mean, std):
@@ -148,10 +162,15 @@ if __name__ == '__main__':
         sys.exit(0)
 
     try:
-        model = resolve_model_name(args.model)
         data = resolve_data_name(args.data)
     except ValueError as e:
         sys.exit(f"[에러] {e}")
+    try:
+        model = resolve_model_name(args.model)
+    except ValueError:
+        # DS 레지스트리 밖 커스텀 태그 (예: isolift_wide_performance) —
+        # 존재 여부는 아래 epsilon.npy 검사에서 확인된다.
+        model = args.model
     if model != args.model or data != args.data:
         print(f"[안내] '{args.model}' / '{args.data}' → '{model}' / '{data}' 로 해석")
     args.model, args.data = model, data
