@@ -28,19 +28,40 @@ import os
 import numpy as np
 import torch
 
-from models.models import DS_MODELS, ds_layers
+from models.models import ds_layers, resolve_model_name
 from utils.expansive import expansive_constant
 from utils.lipschitz import lip_report_from_checkpoint
 from utils.norms import init_random
 from utils.shadowing import (build_pseudo_orbits, save_orbit_files,
                              shadowing_constant, trace_orbits)
-from utils.trajectory import load_trajectory
+from utils.trajectory import infer_n_blocks, load_trajectory
+
+
+def resolve_model_and_layers(model, data, space):
+    """DS 모델명(유연 표기) 또는 커스텀 태그 → (정식 태그, layers).
+
+    DS 레지스트리에 없는 태그(예: isolift_resnet_performance)는
+    저장된 블록 파일 수로 T 를 추론한다.
+    """
+    try:
+        m = resolve_model_name(model)
+        return m, ds_layers(m)
+    except ValueError:
+        n = infer_n_blocks(data, model, space)
+        if n == 0:
+            raise SystemExit(
+                f"[에러] '{model}' 은 DS 레지스트리에 없고 "
+                f"prob_fc/{data}/{model}/ 블록 파일도 없습니다. "
+                "DS 모델은 main.py, IsoLift 태그는 extract_isolift.py 를 "
+                "먼저 실행하세요.")
+        return model, [n]
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="DS-ResNets 안정성 상수 계산")
     p.add_argument('--model', default='ds_resnet18',
-                   choices=list(DS_MODELS))
+                   help="DS 모델명(유연 표기: RESNET18, wrn50 등) 또는 "
+                        "커스텀 태그 (예: isolift_resnet_performance)")
     p.add_argument('--data', default='MNIST',
                    choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
     p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
@@ -202,10 +223,12 @@ if __name__ == '__main__':
     if args.space == 'feat' and args.n_samples is None:
         print("[안내] space='feat'는 D=200,704라 메모리 소모가 큽니다. "
               "--n-samples 1000 등을 권장합니다.")
+    args.model, layers = resolve_model_and_layers(
+        args.model, args.data, args.space)
     run_analysis(
         data_name=args.data,
         model_tag=args.model,
-        layers=ds_layers(args.model),
+        layers=layers,
         space=args.space,
         n_samples=args.n_samples,
         allow_cross_class=args.allow_cross_class,

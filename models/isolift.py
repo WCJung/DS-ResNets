@@ -340,3 +340,25 @@ class IsoLiftNet(nn.Module):
     def residual_blocks(self):
         for stage in self.stages:
             yield from stage
+
+    def block_features(self, x, domain):
+        """각 residual block 통과 직후의 특징 리스트 — probe 학습/추출용.
+
+        기존 DS 파이프라인의 Exprob(블록별 출력 수집)에 대응.
+        stage 전이(PixelUnshuffle) 는 등거리이므로 어느 쪽에서 관측해도
+        d_g 의 정의와 충돌하지 않는다 (블록 통과 직후, 전이 전에 기록).
+        """
+        u = self.lift_and_adapt(x, domain)
+        feats = []
+        for s, stage in enumerate(self.stages):
+            for blk in stage:
+                u = blk(u, domain)
+                feats.append(u)
+            if s < len(self.stages) - 1:
+                u = self.shuffle(u)
+        return feats
+
+    def block_channels(self):
+        """블록 순서대로 채널 수 리스트 (probe 입력 차원)."""
+        return [c for c, stage in zip(STAGE_CHANNELS, self.stages)
+                for _ in range(len(stage))]

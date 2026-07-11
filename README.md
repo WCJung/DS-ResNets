@@ -184,12 +184,25 @@ penalty).  Loss: Σ CE + λ_geo·(distance-ratio hinge on u₀) + λ_lip·(spect
 penalty above ρ).
 
 ```bash
-python train_isolift.py --mode performance --datasets MNIST,CIFAR10,IMAGENET10
+python train_isolift.py --family resnet --mode performance
 python train_isolift.py --mode provable --lambda-lip 0
 python test_isolift.py    # isometry / dimension / Lip<ρ smoke test
 ```
 
-Outputs: `isolift_{mode}.pt`, `Result/isolift_{mode}_metrics.npy`.
+Outputs: `isolift_{family}_{mode}.pt`, `Result/isolift_{family}_{mode}_metrics.npy`.
+
+**Stability / entropy analysis on IsoLift** — train block-wise probes on the
+frozen backbone, then run the existing analysis with the IsoLift tag:
+
+```bash
+python extract_isolift.py --family resnet --mode performance
+python dist_calc.py    --model isolift_resnet_performance --data MNIST --space logit --device cuda
+python entropy_calc.py --model isolift_resnet_performance --data MNIST --space logit --device cuda
+```
+
+`extract_isolift.py` writes `prob_fc/{data}/isolift_{family}_{mode}/`,
+labels, and a `*_multifc.pt` probe checkpoint (block count is inferred from
+the saved files, so `dist_calc`/`entropy_calc` accept the tag directly).
 
 ## Utilities
 

@@ -25,7 +25,7 @@ import os
 
 import numpy as np
 
-from models.models import DS_MODELS, ds_layers
+from dist_calc import resolve_model_and_layers
 from utils.entropy import find_sm_band, ftte_report
 from utils.norms import init_random
 from utils.trajectory import load_trajectory
@@ -33,7 +33,9 @@ from utils.trajectory import load_trajectory
 
 def parse_args():
     p = argparse.ArgumentParser(description="DS-ResNets FTTE 계산")
-    p.add_argument('--model', default='ds_resnet18', choices=list(DS_MODELS))
+    p.add_argument('--model', default='ds_resnet18',
+                   help="DS 모델명(유연 표기) 또는 커스텀 태그 "
+                        "(예: isolift_resnet_performance)")
     p.add_argument('--data', default='MNIST',
                    choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
     p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
@@ -133,10 +135,12 @@ if __name__ == '__main__':
     eps_list = None
     if args.eps:
         eps_list = sorted(float(v) for v in args.eps.split(','))
+    args.model, layers = resolve_model_and_layers(
+        args.model, args.data, args.space)
     run_entropy(
         data_name=args.data,
         model_tag=args.model,
-        layers=ds_layers(args.model),
+        layers=layers,
         space=args.space,
         eps_list=eps_list,
         n_samples=args.n_samples,

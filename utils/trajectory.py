@@ -17,6 +17,20 @@ import numpy as np
 import torch
 
 
+def infer_n_blocks(data_name, model_tag, space='prob'):
+    """저장된 블록 파일 수로 T(블록 수)를 추론.
+
+    DS 레지스트리 밖 커스텀 태그(예: extract_isolift.py 가 만든
+    isolift_{family}_{mode})의 분석을 위해 사용. 파일이 없으면 0.
+    """
+    root = "prob_fc" if space in ('prob', 'logit') else "prob"
+    n = 0
+    while os.path.exists(
+            f"{root}/{data_name}/{model_tag}/{data_name}_block{n}.pt"):
+        n += 1
+    return n
+
+
 def load_trajectory(data_name, model_tag, n_blocks, space='prob',
                     n_samples=None, seed=13):
     """블록별 저장 파일에서 (N, T, D) 궤적 텐서를 구성해 반환.
