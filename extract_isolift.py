@@ -64,21 +64,27 @@ def _infer_structure(state):
     return domains, tuple(layers)
 
 
-def main():
-    args = parse_args()
-    init_random(args.seed)
-    device = torch.device(args.device or
+def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
+                probe_lr=1e-3, batch_size=128, num_workers=4, device=None,
+                seed=13):
+    """probe 학습 + 관측값 추출 전체. 추출된 도메인 리스트를 반환.
+
+    run_isolift_analysis.py 에서 재사용할 수 있도록 함수로 분리.
+    """
+    init_random(seed)
+    device = torch.device(device or
                           ("cuda" if torch.cuda.is_available() else "cpu"))
-    tag = f"isolift_{args.family}_{args.mode}"
-    ckpt = args.ckpt or f"{tag}.pt"
+    tag = f"isolift_{family}_{mode}"
+    ckpt = ckpt or f"{tag}.pt"
     if not os.path.exists(ckpt):
-        raise SystemExit(f"[에러] {ckpt} 없음 — train_isolift.py 를 먼저 "
-                         f"실행하세요 (--family {args.family} --mode {args.mode}).")
+        raise FileNotFoundError(
+            f"{ckpt} 없음 — train_isolift.py 를 먼저 실행하세요 "
+            f"(--family {family} --mode {mode}).")
 
     state = torch.load(ckpt, map_location="cpu")
     domains, layers = _infer_structure(state)
-    model = IsoLiftNet(domains=domains, layers=layers, mode=args.mode,
-                       family=args.family, cardinality=args.cardinality)
+    model = IsoLiftNet(domains=domains, layers=layers, mode=mode,
+                       family=family, cardinality=cardinality)
     model.load_state_dict(state)          # strict — 구조 불일치 시 즉시 에러
     model.to(device).eval()
     for p in model.parameters():
@@ -92,19 +98,19 @@ def main():
     for d in domains:
         tr, te = native_datasets(d)
         trainloader = torch.utils.data.DataLoader(
-            tr, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.num_workers, pin_memory=True)
+            tr, batch_size=batch_size, shuffle=True,
+            num_workers=num_workers, pin_memory=True)
         testloader = torch.utils.data.DataLoader(
-            te, batch_size=args.batch_size, shuffle=False,
-            num_workers=args.num_workers, pin_memory=True)
+            te, batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=True)
 
         probes = nn.ModuleList(
             [nn.Linear(c, n_class) for c in dims]).to(device)
-        opt = torch.optim.Adam(probes.parameters(), lr=args.probe_lr)
+        opt = torch.optim.Adam(probes.parameters(), lr=probe_lr)
 
         # ── probe 학습 (백본 고정) ─────────────────────────────────────
-        print(f"[{d}] 블록별 probe 학습 ({args.probe_epochs} epochs)...")
-        for epoch in range(args.probe_epochs):
+        print(f"[{d}] 블록별 probe 학습 ({probe_epochs} epochs)...")
+        for epoch in range(probe_epochs):
             total = 0.0
             for x, y in trainloader:
                 x, y = x.to(device), y.to(device)
@@ -118,7 +124,7 @@ def main():
                 loss.backward()
                 opt.step()
                 total += float(loss.detach())
-            print(f"    epoch {epoch+1}/{args.probe_epochs}  "
+            print(f"    epoch {epoch+1}/{probe_epochs}  "
                   f"loss={total/len(trainloader):.4f}")
 
         # ── 테스트셋 블록별 logit 추출 ─────────────────────────────────
@@ -151,7 +157,20 @@ def main():
               f"probe ckpt → {tag}_{d}_multifc.pt  "
               f"(마지막 블록 probe acc {acc*100:.2f}%)")
 
-    print("\n다음 단계 (도메인별 안정성/엔트로피 분석):")
+    return domains
+
+
+def main():
+    args = parse_args()
+    domains = run_extract(
+        args.family, args.mode, ckpt=args.ckpt,
+        cardinality=args.cardinality, probe_epochs=args.probe_epochs,
+        probe_lr=args.probe_lr, batch_size=args.batch_size,
+        num_workers=args.num_workers, device=args.device, seed=args.seed)
+
+    tag = f"isolift_{args.family}_{args.mode}"
+    print("\n다음 단계 (도메인별 안정성/엔트로피 분석 — 일괄 실행은 "
+          "run_isolift_analysis.py):")
     for d in domains:
         print(f"  python dist_calc.py    --model {tag} --data {d} "
               f"--space logit --device cuda")

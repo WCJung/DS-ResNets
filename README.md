@@ -195,6 +195,10 @@ Outputs: `isolift_{family}_{mode}.pt`, `Result/isolift_{family}_{mode}_metrics.n
 frozen backbone, then run the existing analysis with the IsoLift tag:
 
 ```bash
+# 일괄 실행 (추출이 안 됐으면 자동 추출 후, 모든 도메인 분석 + 요약 표)
+python run_isolift_analysis.py --families resnet,wide,resnext --modes performance
+
+# 또는 단계별로
 python extract_isolift.py --family resnet --mode performance
 python dist_calc.py    --model isolift_resnet_performance --data MNIST --space logit --device cuda
 python entropy_calc.py --model isolift_resnet_performance --data MNIST --space logit --device cuda

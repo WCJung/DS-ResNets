@@ -217,9 +217,9 @@ def find_sm_band(traj, m, rows=None, chunk=1024, device=None,
                   f"greedy 평가 {n_evals[0]}회)")
         else:
             around = (s_at(b_enter[0]), s_at(b_enter[1]))
-            print(f"  [FTTE] s_T = m 대역 없음 — 경계 부근에서 s_T가 "
-                  f"{around[0]} → {around[1]} 로 m={m} 을 건너뜀 "
-                  f"(greedy 평가 {n_evals[0]}회)")
+            print(f"  [FTTE] s_T = m 대역 없음 — s_T가 m={m} 을 건너뛰거나 "
+                  f"대역이 탐색 분해능보다 좁음 (경계 부근 s: "
+                  f"{around[0]} → {around[1]}, greedy 평가 {n_evals[0]}회)")
 
     return {"exists": exists,
             "eps_lo": eps_lo if exists else float('nan'),

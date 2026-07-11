@@ -111,8 +111,8 @@ def run_entropy(data_name, model_tag, layers, space='prob', eps_list=None,
                   f"궤적 구조가 클래스 구조와 일치")
         else:
             se = band["s_edges"]
-            print(f"  s_T=m 대역 : 없음 — s_T가 {se[0]} → {se[1]} 로 "
-                  f"m={rep['m']} 을 건너뜀 (클래스 스케일 구조가 겹침)")
+            print(f"  s_T=m 대역 : 없음 — s_T가 m={rep['m']} 을 건너뛰거나 "
+                  f"대역이 분해능보다 좁음 (경계 부근 s: {se[0]} → {se[1]})")
     print("=" * 70)
     print("  (s_T는 greedy maximal packing 하한 — 실제 s_g^T(eps) >= 표기값)")
 
