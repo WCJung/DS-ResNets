@@ -29,7 +29,7 @@ import torch.nn.functional as F
 from models.isolift import ISOLIFT_FAMILIES, IsoLiftNet
 from train_isolift import native_datasets
 from utils.norms import init_random
-from utils.stubs import save_block_outputs, save_labels
+from utils.stubs import save_block_outputs, save_labels, save_metrics
 
 
 def parse_args():
@@ -52,6 +52,76 @@ def parse_args():
     return p.parse_args()
 
 
+@torch.no_grad()
+def _evaluate_domain(model, domain, testloader, device):
+    """도메인별 F1/Loss/Acc — main.py 의 evaluate 와 동일한 지표.
+
+    dist_calc 의 Table 1 이 읽는 Result/{data}_{tag}_metrics.npy 포맷을
+    채우기 위해 사용 (train_isolift 는 통합 파일에 acc 만 저장한다).
+    """
+    from sklearn.metrics import f1_score
+    ce = nn.CrossEntropyLoss(reduction="sum")
+    loss_sum, n = 0.0, 0
+    preds, ys = [], []
+    for x, y in testloader:
+        x, y = x.to(device), y.to(device)
+        out = model(x, domain)
+        loss_sum += float(ce(out, y))
+        n += y.numel()
+        preds.append(out.argmax(dim=1).cpu())
+        ys.append(y.cpu())
+    y_pred = torch.cat(preds).numpy()
+    y_true = torch.cat(ys).numpy()
+    return {"f1": float(f1_score(y_true, y_pred, average="macro")),
+            "loss": loss_sum / n,
+            "acc": float((y_pred == y_true).mean())}
+
+
+def _load_model(family, mode, ckpt=None, cardinality=8, device=None):
+    """체크포인트에서 (model, domains, tag, device) 를 복원 — 백본 고정."""
+    device = torch.device(device or
+                          ("cuda" if torch.cuda.is_available() else "cpu"))
+    tag = f"isolift_{family}_{mode}"
+    ckpt = ckpt or f"{tag}.pt"
+    if not os.path.exists(ckpt):
+        raise FileNotFoundError(
+            f"{ckpt} 없음 — train_isolift.py 를 먼저 실행하세요 "
+            f"(--family {family} --mode {mode}).")
+    state = torch.load(ckpt, map_location="cpu")
+    domains, layers = _infer_structure(state)
+    model = IsoLiftNet(domains=domains, layers=layers, mode=mode,
+                       family=family, cardinality=cardinality)
+    model.load_state_dict(state)          # strict — 구조 불일치 시 즉시 에러
+    model.to(device).eval()
+    for p in model.parameters():
+        p.requires_grad_(False)
+    return model, domains, tag, device
+
+
+def save_domain_metrics(family, mode, ckpt=None, cardinality=8,
+                        batch_size=128, num_workers=4, device=None,
+                        skip_existing=True):
+    """도메인별 metrics.npy 가 없으면 평가해서 채운다 (probe 재학습 없음).
+
+    이미 추출을 마친 조합에서 Table 1 의 F1/Loss 칸만 채울 때 사용.
+    """
+    model, domains, tag, device = _load_model(
+        family, mode, ckpt, cardinality, device)
+    for d in domains:
+        path = f"Result/{d}_{tag}_metrics.npy"
+        if skip_existing and os.path.exists(path):
+            continue
+        _, te = native_datasets(d)
+        testloader = torch.utils.data.DataLoader(
+            te, batch_size=batch_size, shuffle=False,
+            num_workers=num_workers, pin_memory=True)
+        metrics = _evaluate_domain(model, d, testloader, device)
+        save_metrics(metrics, d, tag)
+        print(f"[{d}] F1={metrics['f1']:.4f}  Loss={metrics['loss']:.4f}  "
+              f"Acc={metrics['acc']*100:.2f}%  → {path}")
+    return domains
+
+
 def _infer_structure(state):
     """체크포인트 키에서 (domains, layers) 를 복원."""
     domains = sorted({k.split(".")[1] for k in state if k.startswith("heads.")})
@@ -72,27 +142,11 @@ def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
     run_isolift_analysis.py 에서 재사용할 수 있도록 함수로 분리.
     """
     init_random(seed)
-    device = torch.device(device or
-                          ("cuda" if torch.cuda.is_available() else "cpu"))
-    tag = f"isolift_{family}_{mode}"
-    ckpt = ckpt or f"{tag}.pt"
-    if not os.path.exists(ckpt):
-        raise FileNotFoundError(
-            f"{ckpt} 없음 — train_isolift.py 를 먼저 실행하세요 "
-            f"(--family {family} --mode {mode}).")
-
-    state = torch.load(ckpt, map_location="cpu")
-    domains, layers = _infer_structure(state)
-    model = IsoLiftNet(domains=domains, layers=layers, mode=mode,
-                       family=family, cardinality=cardinality)
-    model.load_state_dict(state)          # strict — 구조 불일치 시 즉시 에러
-    model.to(device).eval()
-    for p in model.parameters():
-        p.requires_grad_(False)
-
+    model, domains, tag, device = _load_model(
+        family, mode, ckpt, cardinality, device)
     dims = model.block_channels()
     n_class = model.heads[domains[0]].out_features
-    print(f"[extract] {ckpt}  domains={domains}  blocks={len(dims)}  "
+    print(f"[extract] {tag}.pt  domains={domains}  blocks={len(dims)}  "
           f"dims={dims}  device={device}")
 
     for d in domains:
@@ -103,6 +157,12 @@ def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
         testloader = torch.utils.data.DataLoader(
             te, batch_size=batch_size, shuffle=False,
             num_workers=num_workers, pin_memory=True)
+
+        # 도메인별 F1/Loss/Acc — Table 1 의 성능 열 (main.py 와 동일 포맷)
+        metrics = _evaluate_domain(model, d, testloader, device)
+        save_metrics(metrics, d, tag)
+        print(f"[{d}] F1={metrics['f1']:.4f}  Loss={metrics['loss']:.4f}  "
+              f"Acc={metrics['acc']*100:.2f}%")
 
         probes = nn.ModuleList(
             [nn.Linear(c, n_class) for c in dims]).to(device)

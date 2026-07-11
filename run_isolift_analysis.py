@@ -22,7 +22,7 @@ import torch
 
 from dist_calc import run_analysis
 from entropy_calc import run_entropy
-from extract_isolift import run_extract
+from extract_isolift import run_extract, save_domain_metrics
 from models.isolift import ISOLIFT_FAMILIES
 from utils.trajectory import infer_n_blocks
 
@@ -95,6 +95,21 @@ def main():
                     for d in domains:
                         results[(tag, d)] = ("FAILED", "추출 실패")
                     continue
+
+            # ── 1.5) Table 1 성능 열 (F1/Loss/Acc) 누락분 채우기 ─────
+            # 이전 버전 extract 로 추출한 조합은 metrics 파일이 없다 —
+            # probe 재학습 없이 평가만 수행해 채운다.
+            if any(not os.path.exists(f"Result/{d}_{tag}_metrics.npy")
+                   for d in domains):
+                print(f"[{tag}] 도메인별 F1/Loss/Acc 평가 (metrics 누락분)...")
+                try:
+                    save_domain_metrics(family, mode, device=device,
+                                        batch_size=args.batch_size,
+                                        num_workers=args.num_workers)
+                except Exception:
+                    print(traceback.format_exc().splitlines()[-1])
+                    print("[경고] metrics 평가 실패 — Table 1 의 F1/Loss 는 "
+                          "'—' 로 표시됩니다 (분석은 계속 진행).")
 
             # ── 2)+3) 도메인별 분석 ──────────────────────────────────
             for d in domains:
