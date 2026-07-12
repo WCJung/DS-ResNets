@@ -107,6 +107,10 @@ def parse_args():
     p.add_argument("--label-smoothing", type=float, default=0.1)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False,
+                   help="bf16 autocast (A100 등에서 처리량 ~2배; "
+                        "performance 모드 권장 — provable 모드는 스펙트럴 "
+                        "제약의 수치 정밀도 때문에 fp32 권장)")
     p.add_argument("--seed", type=int, default=13)
     return p.parse_args()
 
@@ -141,13 +145,15 @@ def build_scheduler(optimizer, args):
 
 
 @torch.no_grad()
-def evaluate(model, loaders, device):
+def evaluate(model, loaders, device, amp=False):
     model.eval()
     accs = {}
     for d, loader in loaders.items():
         correct = total = 0
         for x, y in loader:
-            pred = model(x.to(device), d).argmax(dim=1).cpu()
+            with torch.autocast("cuda", dtype=torch.bfloat16,
+                                enabled=amp and device.type == "cuda"):
+                pred = model(x.to(device), d).argmax(dim=1).cpu()
             correct += int((pred == y).sum())
             total += y.numel()
         accs[d] = correct / total
@@ -189,10 +195,15 @@ def main():
     scheduler = build_scheduler(optimizer, args)
     ce = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     steps = max(len(l) for l in train_loaders.values())
+    use_amp = args.amp and device.type == "cuda"
     print(f"  optim={args.optimizer}  lr={args.lr}  wd={args.weight_decay}  "
           f"sched={args.scheduler}(warmup {args.warmup_epochs})  "
           f"epochs={args.epochs}  early_stop={args.early_stop}  "
-          f"label_smoothing={args.label_smoothing}")
+          f"label_smoothing={args.label_smoothing}  amp={use_amp}")
+
+    def autocast():
+        # bf16: GradScaler 불필요 (fp16과 달리 지수 범위가 fp32와 동일)
+        return torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp)
 
     os.makedirs("Result", exist_ok=True)
     history, best, best_epoch = [], 0.0, 0
@@ -207,13 +218,14 @@ def main():
             for d in domains:
                 x, y = next(iters[d])
                 x, y = x.to(device), y.to(device)
-                logits, u0 = model(x, d, return_u0=True)
-                loss_cls = loss_cls + ce(logits, y)
-                if args.lambda_geo > 0:
-                    x2 = x + args.geo_eps * torch.randn_like(x)
-                    u02 = model.lift_and_adapt(x2, d)
-                    loss_geo = loss_geo + geometry_loss(
-                        x, x2, u0, u02, m=args.geo_m, M=args.geo_M)
+                with autocast():
+                    logits, u0 = model(x, d, return_u0=True)
+                    loss_cls = loss_cls + ce(logits, y)
+                    if args.lambda_geo > 0:
+                        x2 = x + args.geo_eps * torch.randn_like(x)
+                        u02 = model.lift_and_adapt(x2, d)
+                        loss_geo = loss_geo + geometry_loss(
+                            x, x2, u0, u02, m=args.geo_m, M=args.geo_M)
             loss_lip = (lipschitz_penalty(model, rho=args.rho)
                         if args.lambda_lip > 0 else torch.tensor(0.0))
             loss = (loss_cls + args.lambda_geo * loss_geo
@@ -228,7 +240,7 @@ def main():
         if scheduler is not None:
             scheduler.step()
 
-        accs = evaluate(model, test_loaders, device)
+        accs = evaluate(model, test_loaders, device, amp=use_amp)
         avg = sum(accs.values()) / len(accs)
         history.append({"epoch": epoch + 1, "accs": accs,
                         "lr": optimizer.param_groups[0]["lr"],
