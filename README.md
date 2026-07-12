@@ -167,11 +167,24 @@ A second architecture family (`models/isolift.py`): instead of sharing the
 post-stem space, each dataset's **raw input** is lifted isometrically into
 one common state space ℝ^{48×56×56} (= 3·224·224 = 150,528):
 
-| Dataset | E_d (exact isometry, frozen) |
-|---|---|
-| MNIST 1×28×28 | center zero-embed → 56×56, unit-norm 1→48 channel lift |
-| CIFAR10 3×32×32 | center zero-pad → 56×56, semi-orthogonal 1×1 (WᵀW=I₃) |
-| IMAGENET10 3×224×224 | `PixelUnshuffle(4)` (coordinate permutation) |
+| Dataset | E_d (exact isometry, frozen) | classes |
+|---|---|---|
+| MNIST 1×28×28 | center zero-embed → 56×56, unit-norm 1→48 channel lift | 10 |
+| CIFAR10 3×32×32 | center zero-pad → 56×56, semi-orthogonal 1×1 (WᵀW=I₃) | 10 |
+| IMAGENET10 3×224×224 | `PixelUnshuffle(4)` (coordinate permutation) | 10 |
+| IMAGENET1K 3×224×224 | `PixelUnshuffle(4)` (same lift as IMAGENET10) | 1000 |
+
+`IMAGENET1K` is full ImageNet-1k in the standard ImageFolder layout
+(`{root}/train/{wnid}/`, `{root}/val/{wnid}/`; no auto-download) — point to
+it with `--imagenet-root` or `IMAGENET_ROOT` (default `data/imagenet`).
+Heads are sized per domain automatically (`DOMAIN_CLASSES`).
+
+```bash
+python train_isolift.py --family resnext --datasets MNIST,CIFAR10,IMAGENET1K \
+    --imagenet-root /path/to/imagenet
+python run_isolift_analysis.py --families resnext --n-samples 10000 \
+    --imagenet-root /path/to/imagenet     # val 5만 장 분석은 서브샘플 권장
+```
 
 Pipeline: `x_d → E_d → A_d (domain adapter) → shared backbone
 (stage transitions PixelUnshuffle(2): 48×56² = 192×28² = 768×14²) → GAP →

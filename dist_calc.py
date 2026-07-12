@@ -63,7 +63,7 @@ def parse_args():
                    help="DS 모델명(유연 표기: RESNET18, wrn50 등) 또는 "
                         "커스텀 태그 (예: isolift_resnet_performance)")
     p.add_argument('--data', default='MNIST',
-                   choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
+                   choices=['MNIST', 'CIFAR10', 'IMAGENET10', 'IMAGENET1K'])
     p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
                    help="d_g 관측 공간 (기본 prob = softmax 확률)")
     p.add_argument('--n-samples', type=int, default=None,

@@ -40,6 +40,11 @@ def parse_args():
     p.add_argument("--probe-epochs", type=int, default=5)
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--n-samples", type=int, default=None,
+                   help="분석 서브샘플 수 — IMAGENET1K(val 5만 장) 등 큰 "
+                        "테스트셋에 권장 (예: 10000)")
+    p.add_argument("--imagenet-root", default=None,
+                   help="ImageNet-1k ImageFolder 루트 (IMAGENET1K 도메인용)")
     p.add_argument("--chunk", type=int, default=1024)
     p.add_argument("--device", default=None,
                    help="기본: cuda 가능하면 cuda")
@@ -49,6 +54,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.imagenet_root:
+        os.environ["IMAGENET_ROOT"] = args.imagenet_root
     device = args.device or ("cuda" if torch.cuda.is_available() else None)
     families = [f.strip() for f in args.families.split(",")]
     modes = [m.strip() for m in args.modes.split(",")]
@@ -120,10 +127,12 @@ def main():
                     n_blocks = infer_n_blocks(d, tag, args.space)
                     run_analysis(data_name=d, model_tag=tag,
                                  layers=[n_blocks], space=args.space,
+                                 n_samples=args.n_samples,
                                  chunk=args.chunk, device=device,
                                  seed=args.seed)
                     run_entropy(data_name=d, model_tag=tag,
                                 layers=[n_blocks], space=args.space,
+                                n_samples=args.n_samples,
                                 chunk=args.chunk, device=device,
                                 seed=args.seed)
                     dur = time.time() - t0

@@ -31,14 +31,15 @@ import matplotlib.pyplot as plt
 from models.models import DS_MODELS, resolve_model_name
 from utils.stubs import load_data
 
-DATASETS = ('MNIST', 'CIFAR10', 'IMAGENET10')
+DATASETS = ('MNIST', 'CIFAR10', 'IMAGENET10', 'IMAGENET1K')
 
 
 def resolve_data_name(name):
     """유연한 데이터셋명 → 정식 이름 (파일 태그와 일치해야 함).
 
     'mnist' → 'MNIST', 'cifar'/'CIFAR-10' → 'CIFAR10',
-    'imagenet'/'imagenette' → 'IMAGENET10'
+    'imagenet'/'imagenette' → 'IMAGENET10',
+    'imagenet1k'/'in1k' → 'IMAGENET1K'
     """
     key = name.strip().upper().replace('-', '').replace('_', '')
     if key == 'MNIST':
@@ -47,6 +48,8 @@ def resolve_data_name(name):
         return 'CIFAR10'
     if key in ('IMAGENET10', 'IMAGENET', 'IMAGENETTE'):
         return 'IMAGENET10'
+    if key in ('IMAGENET1K', 'IN1K', 'IMAGENET1000'):
+        return 'IMAGENET1K'
     raise ValueError(f"알 수 없는 데이터셋 '{name}'. 사용 가능: {', '.join(DATASETS)}")
 
 # 화면 표시용 역정규화 통계 (utils/stubs.py의 load_data 정규화 값과 동일해야 함)
@@ -54,6 +57,7 @@ NORM_STATS = {
     "MNIST":      ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     "CIFAR10":    ([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616]),
     "IMAGENET10": ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    "IMAGENET1K": ([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
 }
 
 
@@ -188,7 +192,13 @@ if __name__ == '__main__':
           f"샘플 {eps_res['sample_a']} <-> {eps_res['sample_b']}  |  "
           f"블록 {eps_res['block']}")
 
-    _, test_set = load_data(args.data)
+    if args.data == 'IMAGENET1K':
+        # ImageNet-1k 는 utils.stubs.load_data 에 없음 — IsoLift 의
+        # 원본 해상도 로더 사용 (val 순서는 추출 때와 동일: ImageFolder 정렬)
+        from train_isolift import native_datasets
+        _, test_set = native_datasets(args.data)
+    else:
+        _, test_set = load_data(args.data)
     saved = save_pair(eps_res, test_set, args.data, args.model, args.out)
     print("저장 완료:")
     for pth in saved:

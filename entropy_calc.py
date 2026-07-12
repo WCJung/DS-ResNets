@@ -37,7 +37,7 @@ def parse_args():
                    help="DS 모델명(유연 표기) 또는 커스텀 태그 "
                         "(예: isolift_resnet_performance)")
     p.add_argument('--data', default='MNIST',
-                   choices=['MNIST', 'CIFAR10', 'IMAGENET10'])
+                   choices=['MNIST', 'CIFAR10', 'IMAGENET10', 'IMAGENET1K'])
     p.add_argument('--space', default='prob', choices=['prob', 'logit', 'feat'],
                    help="d_g 관측 공간 (dist_calc.py와 동일하게 맞출 것)")
     p.add_argument('--eps', default=None,

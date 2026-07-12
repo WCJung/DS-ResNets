@@ -48,6 +48,8 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=128)
     p.add_argument("--num-workers", type=int, default=4)
     p.add_argument("--device", default=None)
+    p.add_argument("--imagenet-root", default=None,
+                   help="ImageNet-1k ImageFolder 루트 (IMAGENET1K 도메인용)")
     p.add_argument("--seed", type=int, default=13)
     return p.parse_args()
 
@@ -145,7 +147,6 @@ def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
     model, domains, tag, device = _load_model(
         family, mode, ckpt, cardinality, device)
     dims = model.block_channels()
-    n_class = model.heads[domains[0]].out_features
     print(f"[extract] {tag}.pt  domains={domains}  blocks={len(dims)}  "
           f"dims={dims}  device={device}")
 
@@ -164,6 +165,8 @@ def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
         print(f"[{d}] F1={metrics['f1']:.4f}  Loss={metrics['loss']:.4f}  "
               f"Acc={metrics['acc']*100:.2f}%")
 
+        # probe 출력 차원은 도메인별 클래스 수 (IMAGENET1K=1000, 나머지=10)
+        n_class = model.heads[d].out_features
         probes = nn.ModuleList(
             [nn.Linear(c, n_class) for c in dims]).to(device)
         opt = torch.optim.Adam(probes.parameters(), lr=probe_lr)
@@ -222,6 +225,8 @@ def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
 
 def main():
     args = parse_args()
+    if args.imagenet_root:
+        os.environ["IMAGENET_ROOT"] = args.imagenet_root
     domains = run_extract(
         args.family, args.mode, ckpt=args.ckpt,
         cardinality=args.cardinality, probe_epochs=args.probe_epochs,

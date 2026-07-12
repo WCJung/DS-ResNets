@@ -65,6 +65,28 @@ def native_datasets(name):
             "data", split="val", size="320px", download=True,
             transform=T.Compose([T.Resize(256), T.CenterCrop(224),
                                  T.ToTensor(), norm]))
+    elif name == "IMAGENET1K":
+        # ImageNet-1k 는 자동 다운로드 불가 — ImageFolder 표준 배치를 기대:
+        #   {root}/train/{wnid}/*.JPEG ,  {root}/val/{wnid}/*.JPEG
+        # root 는 --imagenet-root 또는 환경변수 IMAGENET_ROOT (기본 data/imagenet)
+        root = os.environ.get("IMAGENET_ROOT", "data/imagenet")
+        train_dir, val_dir = (os.path.join(root, "train"),
+                              os.path.join(root, "val"))
+        if not (os.path.isdir(train_dir) and os.path.isdir(val_dir)):
+            raise FileNotFoundError(
+                f"ImageNet-1k 를 찾을 수 없음: {train_dir} / {val_dir}\n"
+                "ImageFolder 배치({root}/train/{wnid}/, {root}/val/{wnid}/)로 "
+                "준비한 뒤 --imagenet-root 또는 IMAGENET_ROOT 로 경로를 "
+                "지정하세요.")
+        norm = T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        tr = torchvision.datasets.ImageFolder(
+            train_dir,
+            transform=T.Compose([T.RandomResizedCrop(224),
+                                 T.RandomHorizontalFlip(), T.ToTensor(), norm]))
+        te = torchvision.datasets.ImageFolder(
+            val_dir,
+            transform=T.Compose([T.Resize(256), T.CenterCrop(224),
+                                 T.ToTensor(), norm]))
     else:
         raise ValueError(f"알 수 없는 데이터셋: {name}")
     return tr, te
@@ -73,7 +95,12 @@ def native_datasets(name):
 def parse_args():
     p = argparse.ArgumentParser(description="IsoLift-ResNeXt 공동 학습")
     p.add_argument("--datasets", default="MNIST,CIFAR10,IMAGENET10",
-                   help="쉼표 구분 (기본: 3개 전부)")
+                   help="쉼표 구분 (기본: MNIST,CIFAR10,IMAGENET10). "
+                        "ImageNet-1k 는 IMAGENET1K 로 지정 "
+                        "(예: MNIST,CIFAR10,IMAGENET1K)")
+    p.add_argument("--imagenet-root", default=None,
+                   help="ImageNet-1k ImageFolder 루트 "
+                        "(기본: $IMAGENET_ROOT 또는 data/imagenet)")
     p.add_argument("--mode", default="performance",
                    choices=["performance", "provable"])
     p.add_argument("--family", default="resnext",
@@ -163,6 +190,8 @@ def evaluate(model, loaders, device, amp=False):
 
 def main():
     args = parse_args()
+    if args.imagenet_root:
+        os.environ["IMAGENET_ROOT"] = args.imagenet_root
     init_random(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

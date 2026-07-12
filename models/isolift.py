@@ -96,7 +96,12 @@ class ImageNetLift(nn.Module):
         return self.unshuffle(x)
 
 
-LIFTS = {"MNIST": MNISTLift, "CIFAR10": CIFARLift, "IMAGENET10": ImageNetLift}
+LIFTS = {"MNIST": MNISTLift, "CIFAR10": CIFARLift,
+         "IMAGENET10": ImageNetLift, "IMAGENET1K": ImageNetLift}
+
+# 도메인별 클래스 수 — head H_d 의 출력 차원 (IsoLiftNet 기본값)
+DOMAIN_CLASSES = {"MNIST": 10, "CIFAR10": 10,
+                  "IMAGENET10": 10, "IMAGENET1K": 1000}
 
 
 # ── 스펙트럴 제약 conv (provable 모드) ────────────────────────────────────────
@@ -273,9 +278,12 @@ class IsoLiftNet(nn.Module):
     """E_d -> A_d -> 공유 T (3 stage, PixelUnshuffle 전이) -> GAP -> H_d."""
 
     def __init__(self, domains=("MNIST", "CIFAR10", "IMAGENET10"),
-                 n_classes=10, layers=(3, 3, 3), cardinality=8,
+                 n_classes=None, layers=(3, 3, 3), cardinality=8,
                  mode="performance", rho=0.9, adapter_beta=0.1,
                  family="resnext"):
+        """n_classes: None 이면 DOMAIN_CLASSES 레지스트리 사용
+        (IMAGENET1K=1000, 나머지=10). int 를 주면 전 도메인 공통,
+        dict {domain: n} 으로 도메인별 지정도 가능."""
         super().__init__()
         assert mode in ("provable", "performance")
         assert family in ISOLIFT_FAMILIES, \
@@ -306,8 +314,14 @@ class IsoLiftNet(nn.Module):
             for c, n in zip(STAGE_CHANNELS, layers)])
         self.shuffle = nn.PixelUnshuffle(2)      # 등거리 stage 전이
 
+        if n_classes is None:
+            ncls = {d: DOMAIN_CLASSES[d] for d in self.domains}
+        elif isinstance(n_classes, int):
+            ncls = {d: n_classes for d in self.domains}
+        else:
+            ncls = dict(n_classes)
         self.heads = nn.ModuleDict(
-            {d: nn.Linear(STAGE_CHANNELS[-1], n_classes) for d in self.domains})
+            {d: nn.Linear(STAGE_CHANNELS[-1], ncls[d]) for d in self.domains})
 
     # E_d / A_d ---------------------------------------------------------------
     def lift(self, x, domain):
