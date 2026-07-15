@@ -80,8 +80,8 @@ def main():
 
             # ── 도메인 목록: 체크포인트에서 복원 ─────────────────────
             from extract_isolift import _infer_structure
-            domains, _ = _infer_structure(
-                torch.load(ckpt, map_location="cpu"))
+            domains = _infer_structure(
+                torch.load(ckpt, map_location="cpu"))[0]
             if only:
                 domains = [d for d in domains if d in only]
 

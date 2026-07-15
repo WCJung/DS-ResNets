@@ -35,7 +35,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 COMMON_DIM = 3 * 224 * 224                       # 150,528
-STAGE_CHANNELS = (48, 192, 768)                  # 48*56^2 = 192*28^2 = 768*14^2
+# 최대 4 stage — PixelUnshuffle(2) 전이마다 채널 x4, 공간 /2:
+#   48*56^2 = 192*28^2 = 768*14^2 = 3072*7^2 = 150,528
+# 표준 ResNet-50/101 의 4-stage 구성 [3,4,6,3]/[3,4,23,3] 을 그대로 수용한다.
+STAGE_CHANNELS = (48, 192, 768, 3072)
+
+
+def _largest_divisor_le(n, cap):
+    """n 의 약수 중 cap 이하 최댓값 — cardinality 를 폭에 맞게 클램프."""
+    return max(g for g in range(1, min(n, cap) + 1) if n % g == 0)
 
 
 def _orthonormal_cols(rows, cols, seed):
@@ -196,14 +204,24 @@ class IsoLiftBlock(nn.Module):
     """
 
     def __init__(self, channels, domains, cardinality=8,
-                 mode="performance", rho=0.9, family="resnext"):
+                 mode="performance", rho=0.9, family="resnext",
+                 width=None, groups=None):
+        """width/groups 를 명시하면 family 기본 비율 대신 사용.
+
+        groups 가 None 이면 grouped 계열은 폭의 약수 중 cardinality 이하
+        최댓값으로 클램프 (예: 폭 24, cardinality 32 → groups 24 —
+        stage 1 처럼 폭이 cardinality 보다 좁은 경우를 표준 구성에서 흡수).
+        """
         super().__init__()
         cfg = ISOLIFT_FAMILIES[family]
-        assert channels % cfg["ratio"] == 0
-        width = channels // cfg["ratio"]
-        groups = cardinality if cfg["grouped"] else 1
+        if width is None:
+            assert channels % cfg["ratio"] == 0
+            width = channels // cfg["ratio"]
+        if groups is None:
+            groups = (_largest_divisor_le(width, cardinality)
+                      if cfg["grouped"] else 1)
         assert width % groups == 0, \
-            f"width {width} 가 cardinality {groups} 로 나누어떨어지지 않음"
+            f"width {width} 가 groups {groups} 로 나누어떨어지지 않음"
         self.mode = mode
         self.family = family
         self.preact = cfg["preact"]
@@ -280,20 +298,32 @@ class IsoLiftNet(nn.Module):
     def __init__(self, domains=("MNIST", "CIFAR10", "IMAGENET10"),
                  n_classes=None, layers=(3, 3, 3), cardinality=8,
                  mode="performance", rho=0.9, adapter_beta=0.1,
-                 family="resnext"):
+                 family="resnext", width_ratio=None, stage_groups=None):
         """n_classes: None 이면 DOMAIN_CLASSES 레지스트리 사용
         (IMAGENET1K=1000, 나머지=10). int 를 주면 전 도메인 공통,
-        dict {domain: n} 으로 도메인별 지정도 가능."""
+        dict {domain: n} 으로 도메인별 지정도 가능.
+
+        layers 는 최대 4개 stage — 표준 구성 예:
+          (3,4,6,3)  = T=16  (ResNet-50 형)
+          (3,4,23,3) = T=33  (ResNet-101 형)
+        width_ratio : family 기본 병목 비율(resnet 4 / wide 2 / resnext 3)
+          대신 사용할 값 — 표준 ResNeXt(2x 폭)는 width_ratio=2, cardinality=32.
+        stage_groups: stage 별 groups 명시 리스트 (체크포인트 복원용;
+          None 이면 cardinality 를 폭에 맞게 클램프해 자동 결정).
+        """
         super().__init__()
         assert mode in ("provable", "performance")
         assert family in ISOLIFT_FAMILIES, \
             f"family 는 {list(ISOLIFT_FAMILIES)} 중 하나: {family}"
+        assert 1 <= len(layers) <= len(STAGE_CHANNELS), \
+            f"stage 수는 1~{len(STAGE_CHANNELS)}: {layers}"
         unknown = [d for d in domains if d not in LIFTS]
         assert not unknown, f"지원하지 않는 도메인: {unknown}"
         self.domains = tuple(domains)
         self.mode = mode
         self.rho = rho
         self.family = family
+        self.width_ratio = width_ratio or ISOLIFT_FAMILIES[family]["ratio"]
 
         self.lifts = nn.ModuleDict({d: LIFTS[d]() for d in self.domains})
         for p in self.lifts.parameters():
@@ -309,9 +339,10 @@ class IsoLiftNet(nn.Module):
         self.stages = nn.ModuleList([
             nn.ModuleList([
                 IsoLiftBlock(c, self.domains, cardinality, mode, rho,
-                             family=family)
+                             family=family, width=c // self.width_ratio,
+                             groups=(stage_groups[s] if stage_groups else None))
                 for _ in range(n)])
-            for c, n in zip(STAGE_CHANNELS, layers)])
+            for s, (c, n) in enumerate(zip(STAGE_CHANNELS, layers))])
         self.shuffle = nn.PixelUnshuffle(2)      # 등거리 stage 전이
 
         if n_classes is None:
@@ -320,8 +351,9 @@ class IsoLiftNet(nn.Module):
             ncls = {d: n_classes for d in self.domains}
         else:
             ncls = dict(n_classes)
+        out_channels = STAGE_CHANNELS[len(layers) - 1]   # 마지막 사용 stage
         self.heads = nn.ModuleDict(
-            {d: nn.Linear(STAGE_CHANNELS[-1], ncls[d]) for d in self.domains})
+            {d: nn.Linear(out_channels, ncls[d]) for d in self.domains})
 
     # E_d / A_d ---------------------------------------------------------------
     def lift(self, x, domain):

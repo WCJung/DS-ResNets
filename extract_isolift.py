@@ -90,9 +90,10 @@ def _load_model(family, mode, ckpt=None, cardinality=8, device=None):
             f"{ckpt} 없음 — train_isolift.py 를 먼저 실행하세요 "
             f"(--family {family} --mode {mode}).")
     state = torch.load(ckpt, map_location="cpu")
-    domains, layers = _infer_structure(state)
+    domains, layers, width_ratio, stage_groups = _infer_structure(state)
     model = IsoLiftNet(domains=domains, layers=layers, mode=mode,
-                       family=family, cardinality=cardinality)
+                       family=family, cardinality=cardinality,
+                       width_ratio=width_ratio, stage_groups=stage_groups)
     model.load_state_dict(state)          # strict — 구조 불일치 시 즉시 에러
     model.to(device).eval()
     for p in model.parameters():
@@ -125,15 +126,26 @@ def save_domain_metrics(family, mode, ckpt=None, cardinality=8,
 
 
 def _infer_structure(state):
-    """체크포인트 키에서 (domains, layers) 를 복원."""
+    """체크포인트 키에서 (domains, layers, width_ratio, stage_groups) 복원.
+
+    width_ratio 는 conv1(1x1, groups=1) 가중치 (width, channels, 1, 1) 에서,
+    stage 별 groups 는 conv2(3x3) 가중치 (width, width/groups, 3, 3) 에서
+    추론 — 표준 구성(--width-ratio / cardinality 클램프)으로 학습한
+    체크포인트도 옵션 재지정 없이 그대로 로드된다.
+    """
     domains = sorted({k.split(".")[1] for k in state if k.startswith("heads.")})
     n_stage = 1 + max(int(k.split(".")[1]) for k in state
                       if k.startswith("stages."))
-    layers = []
+    layers, stage_groups, width_ratio = [], [], None
     for s in range(n_stage):
         layers.append(1 + max(int(k.split(".")[2]) for k in state
                               if k.startswith(f"stages.{s}.")))
-    return domains, tuple(layers)
+        w1 = state[f"stages.{s}.0.conv1.weight"]      # (width, channels, 1, 1)
+        width, channels = w1.shape[0], w1.shape[1]
+        width_ratio = channels // width               # 모든 stage 동일 비율
+        w2 = state[f"stages.{s}.0.conv2.weight"]      # (width, width/groups, 3, 3)
+        stage_groups.append(width // w2.shape[1])
+    return domains, tuple(layers), width_ratio, stage_groups
 
 
 def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,

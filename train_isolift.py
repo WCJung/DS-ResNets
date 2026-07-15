@@ -109,8 +109,15 @@ def parse_args():
                         "resnet=폭 C/4 baseline / wide=폭 C/2+dropout, "
                         "pre-act / resnext=폭 C/3 grouped")
     p.add_argument("--layers", default="3,3,3",
-                   help="stage 별 블록 수 (쉼표 구분)")
-    p.add_argument("--cardinality", type=int, default=8)
+                   help="stage 별 블록 수 (쉼표 구분, 최대 4 stage). 표준 구성: "
+                        "3,4,6,3 = T16 (ResNet-50형) / 3,4,23,3 = T33 "
+                        "(ResNet-101형)")
+    p.add_argument("--cardinality", type=int, default=8,
+                   help="grouped 3x3 의 그룹 수 (resnext). 폭보다 크면 stage "
+                        "별로 폭의 약수로 자동 클램프. 표준 ResNeXt: 32")
+    p.add_argument("--width-ratio", type=int, default=None,
+                   help="병목 폭 비율 재정의 (기본: 계열별 resnet 4 / wide 2 / "
+                        "resnext 3). 표준 ResNeXt(2x 폭)는 2")
     p.add_argument("--rho", type=float, default=0.9,
                    help="branch Lipschitz 목표 (<1)")
     p.add_argument("--lambda-geo", type=float, default=0.1)
@@ -203,10 +210,13 @@ def main():
 
     model = IsoLiftNet(domains=domains, layers=layers,
                        cardinality=args.cardinality, mode=args.mode,
-                       rho=args.rho, family=args.family).to(device)
+                       rho=args.rho, family=args.family,
+                       width_ratio=args.width_ratio).to(device)
     n_param = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    groups_per_stage = [stage[0].conv2.groups for stage in model.stages]
     print(f"[IsoLift] family={args.family}  mode={args.mode}  "
-          f"domains={domains}  layers={layers}  "
+          f"domains={domains}  layers={layers}  T={sum(layers)}  "
+          f"width_ratio={model.width_ratio}  groups/stage={groups_per_stage}  "
           f"params={n_param/1e6:.2f}M  device={device}")
 
     train_loaders, test_loaders = {}, {}
