@@ -25,3 +25,4 @@ logs/
 
 # Claude Code internal files
 CLAUDE.md
+/data/imagenet1k/
