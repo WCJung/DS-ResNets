@@ -45,6 +45,8 @@ def parse_args():
                         "테스트셋에 권장 (예: 10000)")
     p.add_argument("--imagenet-root", default=None,
                    help="ImageNet-1k ImageFolder 루트 (IMAGENET1K 도메인용)")
+    p.add_argument("--tag-suffix", default="",
+                   help="학습 때 지정한 태그 접미사 (예: _T16)")
     p.add_argument("--chunk", type=int, default=1024)
     p.add_argument("--device", default=None,
                    help="기본: cuda 가능하면 cuda")
@@ -71,7 +73,7 @@ def main():
 
     for family in families:
         for mode in modes:
-            tag = f"isolift_{family}_{mode}"
+            tag = f"isolift_{family}_{mode}{args.tag_suffix}"
             ckpt = f"{tag}.pt"
             if not os.path.exists(ckpt):
                 print(f"\n[skip] {ckpt} 없음 — train_isolift.py 미실행 조합")
@@ -93,6 +95,7 @@ def main():
                       f"probe 추출 실행\n{'='*70}")
                 try:
                     run_extract(family, mode, probe_epochs=args.probe_epochs,
+                                tag_suffix=args.tag_suffix,
                                 batch_size=args.batch_size,
                                 num_workers=args.num_workers,
                                 device=device, seed=args.seed)
@@ -111,6 +114,7 @@ def main():
                 print(f"[{tag}] 도메인별 F1/Loss/Acc 평가 (metrics 누락분)...")
                 try:
                     save_domain_metrics(family, mode, device=device,
+                                        tag_suffix=args.tag_suffix,
                                         batch_size=args.batch_size,
                                         num_workers=args.num_workers)
                 except Exception:

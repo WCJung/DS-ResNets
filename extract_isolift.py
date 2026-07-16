@@ -50,6 +50,8 @@ def parse_args():
     p.add_argument("--device", default=None)
     p.add_argument("--imagenet-root", default=None,
                    help="ImageNet-1k ImageFolder 루트 (IMAGENET1K 도메인용)")
+    p.add_argument("--tag-suffix", default="",
+                   help="학습 때 지정한 태그 접미사 (예: _T16)")
     p.add_argument("--seed", type=int, default=13)
     return p.parse_args()
 
@@ -79,11 +81,12 @@ def _evaluate_domain(model, domain, testloader, device):
             "acc": float((y_pred == y_true).mean())}
 
 
-def _load_model(family, mode, ckpt=None, cardinality=8, device=None):
+def _load_model(family, mode, ckpt=None, cardinality=8, device=None,
+                tag_suffix=""):
     """체크포인트에서 (model, domains, tag, device) 를 복원 — 백본 고정."""
     device = torch.device(device or
                           ("cuda" if torch.cuda.is_available() else "cpu"))
-    tag = f"isolift_{family}_{mode}"
+    tag = f"isolift_{family}_{mode}{tag_suffix}"
     ckpt = ckpt or f"{tag}.pt"
     if not os.path.exists(ckpt):
         raise FileNotFoundError(
@@ -103,13 +106,13 @@ def _load_model(family, mode, ckpt=None, cardinality=8, device=None):
 
 def save_domain_metrics(family, mode, ckpt=None, cardinality=8,
                         batch_size=128, num_workers=4, device=None,
-                        skip_existing=True):
+                        skip_existing=True, tag_suffix=""):
     """도메인별 metrics.npy 가 없으면 평가해서 채운다 (probe 재학습 없음).
 
     이미 추출을 마친 조합에서 Table 1 의 F1/Loss 칸만 채울 때 사용.
     """
     model, domains, tag, device = _load_model(
-        family, mode, ckpt, cardinality, device)
+        family, mode, ckpt, cardinality, device, tag_suffix)
     for d in domains:
         path = f"Result/{d}_{tag}_metrics.npy"
         if skip_existing and os.path.exists(path):
@@ -150,14 +153,14 @@ def _infer_structure(state):
 
 def run_extract(family, mode, ckpt=None, cardinality=8, probe_epochs=5,
                 probe_lr=1e-3, batch_size=128, num_workers=4, device=None,
-                seed=13):
+                seed=13, tag_suffix=""):
     """probe 학습 + 관측값 추출 전체. 추출된 도메인 리스트를 반환.
 
     run_isolift_analysis.py 에서 재사용할 수 있도록 함수로 분리.
     """
     init_random(seed)
     model, domains, tag, device = _load_model(
-        family, mode, ckpt, cardinality, device)
+        family, mode, ckpt, cardinality, device, tag_suffix)
     dims = model.block_channels()
     print(f"[extract] {tag}.pt  domains={domains}  blocks={len(dims)}  "
           f"dims={dims}  device={device}")
@@ -243,9 +246,10 @@ def main():
         args.family, args.mode, ckpt=args.ckpt,
         cardinality=args.cardinality, probe_epochs=args.probe_epochs,
         probe_lr=args.probe_lr, batch_size=args.batch_size,
-        num_workers=args.num_workers, device=args.device, seed=args.seed)
+        num_workers=args.num_workers, device=args.device, seed=args.seed,
+        tag_suffix=args.tag_suffix)
 
-    tag = f"isolift_{args.family}_{args.mode}"
+    tag = f"isolift_{args.family}_{args.mode}{args.tag_suffix}"
     print("\n다음 단계 (도메인별 안정성/엔트로피 분석 — 일괄 실행은 "
           "run_isolift_analysis.py):")
     for d in domains:

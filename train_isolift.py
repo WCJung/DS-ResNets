@@ -141,6 +141,10 @@ def parse_args():
     p.add_argument("--label-smoothing", type=float, default=0.1)
     p.add_argument("--batch-size", type=int, default=64)
     p.add_argument("--num-workers", type=int, default=4)
+    p.add_argument("--tag-suffix", default="",
+                   help="체크포인트/결과 태그 접미사 — 깊이 변형 등 병행 실험용 "
+                        "(예: --layers 5,6,5 --tag-suffix _T16 → "
+                        "isolift_{family}_{mode}_T16.pt)")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False,
                    help="bf16 autocast (A100 등에서 처리량 ~2배; "
                         "performance 모드 권장 — provable 모드는 스펙트럴 "
@@ -292,13 +296,13 @@ def main():
 
         if avg > best:
             best, best_epoch = avg, epoch
-            torch.save(model.state_dict(), f"isolift_{args.family}_{args.mode}.pt")
+            torch.save(model.state_dict(), f"isolift_{args.family}_{args.mode}{args.tag_suffix}.pt")
         elif args.early_stop > 0 and epoch - best_epoch >= args.early_stop:
             print(f"[early stop] {args.early_stop} 에폭 동안 개선 없음 "
                   f"(best = epoch {best_epoch+1}, avg {best*100:.2f}%)")
             break
 
-    np.save(f"Result/isolift_{args.family}_{args.mode}_metrics.npy",
+    np.save(f"Result/isolift_{args.family}_{args.mode}{args.tag_suffix}_metrics.npy",
             {"history": history, "best_avg_acc": best,
              "domains": domains, "mode": args.mode, "layers": layers,
              "rho": args.rho, "lambda_geo": args.lambda_geo,
@@ -309,7 +313,7 @@ def main():
              "early_stop": args.early_stop,
              "label_smoothing": args.label_smoothing})
     print(f"완료.  best 평균 acc = {best*100:.2f}%  "
-          f"→ isolift_{args.family}_{args.mode}.pt / Result/isolift_{args.family}_{args.mode}_metrics.npy")
+          f"→ isolift_{args.family}_{args.mode}{args.tag_suffix}.pt / Result/isolift_{args.family}_{args.mode}{args.tag_suffix}_metrics.npy")
 
 
 if __name__ == "__main__":
