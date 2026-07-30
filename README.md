@@ -14,18 +14,15 @@ For a trained network, let \(x_t\) be the representation after residual block
 \(t\), and let \(g_t\) be the linear observation map attached to that block.
 The empirical analysis uses the block-wise observation family
 
-\[
-G=\{g_t\}_{t=0}^{T-1}
-\]
+$G=\{g_t\}_{t=0}^{T-1}$
 
 and the finite-depth trajectory distance
 
-\[
-d_G^T(x,y)
+$d_G^T(x,y)
 =
 \max_{0\le t<T}
 \|g_t(x_t)-g_t(y_t)\|_2.
-\]
+$
 
 The repository estimates:
 
