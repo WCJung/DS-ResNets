@@ -1,336 +1,341 @@
-# DS-ResNets
+# IsoLift ResNets: Finite-Time Topological Dynamics
 
-Quantifying the **topological stability** (g-expansivity, g-shadowing,
-topological g-stability) and **topological entropy** (FTTE) of trained
-ResNets, viewed as finite-time discrete dynamical systems.
+This repository implements the models and empirical analyses used in
+*Stability of ResNets: A Topological Dynamics Perspective*.
 
-All quantities are computed in the pseudometric
-**d_g(x, y) = d(g(x), g(y))** — the observation space of the block-wise
-classifiers g — matching the definitions in the paper.
+The main experiments use **IsoLift-ResNet**, **IsoLift-Wide ResNet**, and
+**IsoLift-ResNeXt** on **MNIST**, **CIFAR-10**, and **Imagenette**. Fixed
+isometric input lifts and dimension-preserving stage transitions place all
+representations in a common ambient Euclidean state space.
 
-The repository contains two architecture lines, both dimension-preserving:
+## What the repository estimates
 
-| Line | Phase space | Datasets | Role |
-|---|---|---|---|
-| **IsoLift** (`models/isolift.py`) | ℝ^150,528 from the **raw input**, via exact isometric lifts | MNIST + CIFAR-10 + Imagenette **jointly** | **current main line** — all reported results |
-| DS-ResNets (`models/ResNets.py`) | ℝ^200,704 **after the stem** | one dataset at a time | original single-dataset formulation |
+For a trained network, let \(x_t\) be the representation after residual block
+\(t\), and let \(g_t\) be the linear observation map attached to that block.
+The empirical analysis uses the block-wise observation family
 
-IsoLift is the architecture used for the experiments in the paper: because
-each dataset enters through an exact isometry, constants measured on
-different datasets are expressed in the same units and can be compared
-directly. See [IsoLift](#isolift--multi-dataset-common-state-models) below.
+\[
+G=\{g_t\}_{t=0}^{T-1}
+\]
 
-### DS-ResNets — single-dataset models
+and the finite-depth trajectory distance
 
-Every residual block acts on a common phase space (flattened dim 200,704 —
-the Clipper reshapes are coordinate permutations, hence l2-isometries).
-The block *interior* is free; three families are provided:
+\[
+d_G^T(x,y)
+=
+\max_{0\le t<T}
+\|g_t(x_t)-g_t(y_t)\|_2.
+\]
 
-| Name | Block | Idea |
-|---|---|---|
-| `ds_resnet18` / `ds_resnet50` | `Bottleneck` | grouped bottleneck (baseline) |
-| `ds_wide18` / `ds_wide50` | `WideBottleneck` | Wide-ResNet: 2× bottleneck width + dropout, **pre-activation** |
-| `ds_resnext18` / `ds_resnext50` | `ResNeXtBottleneck` | ResNeXt: cardinality-32 aggregated transforms |
+The repository estimates:
 
-`*18` = 8 blocks, `*50` = 16 blocks. The registry lives in
-`models/models.py` (`DS_MODELS`).
+- the empirical \(g\)-expansive constant \(\varepsilon_g\), which identifies
+  the weakest separation between samples with different labels;
+- the empirical \(g\)-shadowing constant \(Sh_g\);
+- the observation sensitivity
+  \[
+  \mathrm{Lip}(G)=\max_t\mathrm{Lip}(g_t);
+  \]
+- the certified stability lower bound
+  \[
+  B_g=\frac{Sh_g}{\mathrm{Lip}(G)}\le T_g;
+  \]
+- finite-time trajectory entropy (FTTE), estimated by greedy separated-set
+  packing.
 
+The exact topological \(g\)-stability constant \(T_g\) is **not** computed.
+The code reports the theorem-based lower bound \(B_g\).
 
+The paper reports the main IsoLift results in **logit space**. Use
+`--space logit` when reproducing the reported tables and figures.
 
-## Install
+## Terminology
+
+The code retains two legacy mode tags:
+
+| Code tag | Terminology used in the paper |
+|---|---|
+| `performance` | Lipschitz-unconstrained configuration |
+| `provable` | Lipschitz-constrained configuration |
+
+The term *Lipschitz-unconstrained* means that no hard branch-wise Lipschitz
+bound is enforced; a soft spectral penalty may still be used.
+
+## IsoLift architecture
+
+Each dataset is mapped by a fixed, non-trainable lift
+\(E_d:\mathcal X_d\to\mathbb R^{48\times56\times56}\).
+
+| Dataset | Fixed lift \(E_d\) |
+|---|---|
+| MNIST | center zero-embedding into \(56\times56\), followed by a unit-norm \(1\to48\) channel lift |
+| CIFAR-10 | center zero-padding into \(56\times56\), followed by a semi-orthogonal \(1\times1\) channel lift |
+| Imagenette | `PixelUnshuffle(4)`, a coordinate permutation |
+
+The fixed lifts preserve within-dataset Euclidean distances exactly at the
+lift. Stage transitions use `PixelUnshuffle(2)` and preserve the flattened
+state dimension:
+
+```text
+48×56² = 192×28² = 768×14² = 3072×7² = 150,528
+```
+
+The fixed lifts and `PixelUnshuffle` transitions are isometries at the points
+where they are applied. Learned residual blocks may expand or contract
+distances; measuring that evolution is the purpose of the trajectory
+analysis.
+
+In the Lipschitz-unconstrained configuration, a dataset-specific adapter is
+applied after the fixed lift. The complete entry map is therefore not
+necessarily isometric; its distortion is controlled empirically by the
+geometry loss.
+
+Raw observation-space quantities such as \(\varepsilon_g\) remain dependent
+on the scale of the learned probes. They should be interpreted together with
+\(\mathrm{Lip}(G)\) or a scale-normalized quantity.
+
+### Model families
+
+| Family | Residual-branch design |
+|---|---|
+| `resnet` | standard bottleneck |
+| `wide` | wider bottleneck |
+| `resnext` | grouped transform with increased cardinality |
+
+The paper evaluates each family at:
+
+- \(T=16\): ResNet-50-type stage configuration `[3,4,6,3]`;
+- \(T=33\): ResNet-101-type stage configuration `[3,4,23,3]`.
+
+Within each training configuration, the architecture families share the same
+fixed lifts, state dimensions, stage transitions, block counts, and
+optimization protocol. The Lipschitz-constrained and
+Lipschitz-unconstrained configurations differ in several architectural and
+training components; their comparison should therefore be interpreted as a
+comparison of the complete configurations rather than as an isolated causal
+effect of the hard spectral constraint.
+
+## Installation
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Pipeline
+## Reproducing the paper experiments
 
-### 1. Train & Extract — `main.py`
+### 1. Train IsoLift models
 
-Trains a backbone, evaluates F1/Loss/Acc, and (DS-ResNet only) saves per-block
-raw features and block-wise fc logits for every test sample.
+The checkpoint tag is
 
-```bash
-python main.py --model ds_resnet18 --data MNIST
-python main.py --model ds_resnet50 --data CIFAR10
-python main.py --model resnet18   --data MNIST     # accuracy baseline only
+```text
+isolift_{family}_{mode}{tag_suffix}
 ```
 
-| Option | Default | Description |
-|---|---|---|
-| `--model` | `ds_resnet18` | any name in `DS_MODELS` (table above) / `resnet18` / `resnet50` |
-| `--data` | `MNIST` | `MNIST` / `CIFAR10` / `IMAGENET10` (Imagenette) |
-| `--use-block-fc / --no-use-block-fc` | on | train per-block linear probes (required for analysis) |
-| `--use-avgpool / --no-use-avgpool` | on | avgpool before the main fc |
-| `--save-raw-feat / --no-save-raw-feat` | off | also dump raw per-block features (D=200,704) for legacy `--space feat`. Off by default — accumulating all blocks in RAM needs ~128 GB on `*50` models and was the OOM cause. |
-| `--epochs / --lr / --batch-size / --seed` | 100 / 5e-5 / 64 / 13 | training hyperparameters |
+For example, `isolift_resnet_performance_50` denotes the
+Lipschitz-unconstrained IsoLift-ResNet-50 configuration.
 
-Outputs: `{model}_{data}.pt`, `{model}_{data}_multifc.pt`,
-`Result/{data}_{model}_metrics.npy` (F1/Loss/Acc),
-`prob_fc/`, `pix/.../{data}_label.pt` (and `prob/` only with `--save-raw-feat`).
-The block-wise fc logits in `prob_fc/` are all the `--space prob`/`logit`
-analysis needs; the raw `prob/` features feed only the legacy `--space feat`.
-
----
-
-### 2. Stability Analysis — `dist_calc.py`
-
-Computes, in the d_g observation space (default `--space prob` =
-softmax probabilities of the block-wise fc):
-
-1. **g-expansive constant** (Definition 1) — *min over cross-class pairs of the
-   max over blocks* of d_g (min–max, as the definition requires).
-2. **g-shadowing constant** (Definition 2) — builds nearest-neighbour
-   pseudo-orbits, finds for each chain the best-tracing true orbit
-   (eps_i = min over candidates of the **max over blocks** tracing error), and
-   reports the ratio curve `delta*(eps)/eps` with its smallest-eps value as the
-   Sh_g estimate (empirical analogue of the liminf in Morales–Nguyen).
-3. **Lip(g)** — exact spectral norm of each block fc (single linear layer), with
-   a softmax correction factor (≤ 1/2) when `--space prob`, and an avgpool
-   correction `1/sqrt(k)` reported for the main fc.
-4. **Table 1 row** printed to the terminal:
-   F1 / Loss / g-expansive / g-shadowing / Lip(g).
-   The topological g-stable constant is *not* printed — compute it via
-   Theorem 1: `T_g(phi) >= Sh_g(phi) / Lip(g)`.
+#### \(T=16\): ResNet-50-type models
 
 ```bash
-python dist_calc.py --model ds_resnet18 --data MNIST
-python dist_calc.py --model ds_resnet50 --data CIFAR10 --device cuda
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--space` | `prob` | d_g space: `prob` (softmax), `logit`, `feat` (legacy raw features) |
-| `--legacy-orbit` | off | old chain mode (always block 0→1 transition) instead of depth-consistent |
-| `--allow-cross-class` | off | let pseudo-orbit neighbours cross class boundaries |
-| `--cross-class-trace` | off | let tracing candidates cross class boundaries |
-| `--n-samples` | all | subsample size (recommended for `--space feat`) |
-| `--device` | cpu | `cuda` for GPU-accelerated distance computation |
-
-Outputs: `Result/{data}_{model}_epsilon.npy`, `_shadowing.npy`, `_theorem.npy`,
-`task2/{data}_{model}_{SeqInfo,MaxList,ClassInfo,TraceEps}.npy`.
-
-To dump the actual image pair that attains the g-expansive constant
-(the cross-class pair reported as `class a vs b, block k`):
-
-```bash
-python save_expansive_pair.py --model ds_resnet18 --data MNIST
-```
-
-Saves the two individual PNGs plus an annotated side-by-side figure to
-`Result/expansive_pair/` (any model/data that dist_calc has been run on).
-
----
-
-### 3. Entropy (FTTE) — `entropy_calc.py`
-
-Computes the finite-time trajectory entropy in the same d_g space, using the
-trajectory pseudometric `d_g^T(x,y) = max_t d(g_t(φ^t x), g_t(φ^t y))`:
-
-1. **Proposition 1 diagnostics** — `intra_max` (largest within-class d_g^T),
-   `cross_min` (smallest cross-class d_g^T, which equals the g-expansive
-   constant), and the ε-window `[intra_max, cross_min)` on which `s_T = m`
-   (hence `Δh_T = 0`) is guaranteed.
-2. **FTTE grid** — for each ε (auto quantile grid, or `--eps 0.05,0.1,...`):
-   `s_T(ε)` via greedy maximal (T, ε)-separated packing (a lower bound of the
-   NP-hard maximum), `h_T(ε) = log(s_T)/T`, and the FTTE gap
-   `Δh_T(ε) = h_T(ε) − log(m)/T` with its Proposition-2 sign (`s` vs `m`).
-
-```bash
-python entropy_calc.py --model ds_resnet18 --data MNIST
-python entropy_calc.py --model ds_wide50 --data CIFAR10 --device cuda
-```
-
-Outputs: `Result/{data}_{model}_entropy.npy`.
-
----
-### 4. Lipschitz Curve — `lip_curve.py`
-
-Plots the block-wise observation gain `t -> Lip(g_t)` from the probe
-checkpoints alone (no retraining, no re-extraction). The maximum of the
-curve equals the `Lip(g)` reported by `dist_calc.py`, which the script
-asserts internally.
-
-```bash
-python lip_curve.py                                    # ResNet-50, both modes
-python lip_curve.py --families resnet,wide,resnext \
-    --depths 50,101 --modes performance,provable       # all 12 tags
-python lip_curve.py --models isolift_wide_provable_50  # explicit tags
-```
-
-| Option | Default | Description |
-|---|---|---|
-| `--models` | none | comma-separated tags; overrides `--families/--depths/--modes` |
-| `--datasets` | `CIFAR10,IMAGENET10,MNIST` | comma-separated |
-| `--space` | `logit` | must match `dist_calc.py` |
-| `--families` / `--depths` / `--modes` | `resnet` / `50` / both | combination builder |
-| `--out-dir` | `Result/lip_curves` | output directory |
-
-Outputs: `{data}_{model}_lip_curve.npy` (block_lip, L_max, L_mean, L_std,
-R_peak, argmax_block), `lip_curve_summary.csv`, and
-`{data}_lip_curve.png/.pdf` (performance solid, provable dashed).
-
-
-### 5. Inspect Examples — `inspect_examples.py`
-
-Selects and visualises concrete instability examples:
-
-- **[Expansive]** Top-10 same-class pairs whose block_fc output distance is
-  anomalously large (blocks ≥ 50 % depth).
-- **[Shadowing]** Pseudo-orbit chains ranked by prediction-class flip count —
-  most robust chain and most unstable chain.
-
-```bash
-python inspect_examples.py --model ds_resnet18 --data MNIST
-```
-
-Output PNGs saved to `Result/inspect/`.
-
----
-
-### All combinations — `run_all.py`
-
-Runs all models × 3 datasets sequentially (train → extract → stability →
-entropy) with logging to `logs/`. Trim `MODELS` in the config block if you
-don't need all 8. `print_results.py` prints the aggregated Table 1
-(including `h_T` / `Δh_T` columns) and saves example images.
-
-```bash
-python run_all.py
-python print_results.py
-```
-
-## IsoLift — multi-dataset common-state models
-
-The architecture used for the results in the paper (`models/isolift.py`).
-Instead of sharing the post-stem space, each dataset's **raw input** is
-lifted isometrically into one common state space ℝ^{48×56×56}
-(= 3·224·224 = 150,528), and stage transitions are `PixelUnshuffle(2)`
-coordinate permutations rather than strided convolutions:
-
-    48×56² = 192×28² = 768×14² = 3072×7² = 150,528
-
-so every residual block is a self-map of a single metric space, and
-distances anywhere in the network equal distances between raw inputs.
-
-## IsoLift-ResNeXt — multi-dataset common-state model (experimental)
-
-A second architecture family (`models/isolift.py`): instead of sharing the
-post-stem space, each dataset's **raw input** is lifted isometrically into
-one common state space ℝ^{48×56×56} (= 3·224·224 = 150,528):
-
-| Dataset | E_d (exact isometry, frozen) | classes |
-|---|---|---|
-| MNIST 1×28×28 | center zero-embed → 56×56, unit-norm 1→48 channel lift | 10 |
-| CIFAR10 3×32×32 | center zero-pad → 56×56, semi-orthogonal 1×1 (WᵀW=I₃) | 10 |
-| IMAGENET10 3×224×224 | `PixelUnshuffle(4)` (coordinate permutation) | 10 |
-| IMAGENET1K 3×224×224 | `PixelUnshuffle(4)` (same lift as IMAGENET10) | 1000 |
-
-`IMAGENET1K` is full ImageNet-1k in the standard ImageFolder layout
-(`{root}/train/{wnid}/`, `{root}/val/{wnid}/`; no auto-download) — point to
-it with `--imagenet-root` or `IMAGENET_ROOT` (default `data/imagenet`).
-Heads are sized per domain automatically (`DOMAIN_CLASSES`).
-
-```bash
-python train_isolift.py --family resnext --datasets MNIST,CIFAR10,IMAGENET1K \
-    --imagenet-root /path/to/imagenet
-python run_isolift_analysis.py --families resnext --n-samples 10000 \
-    --imagenet-root /path/to/imagenet     
-```
-
-Pipeline: `x_d → E_d → A_d (domain adapter) → shared backbone
-(stage transitions PixelUnshuffle(2): 48×56² = 192×28² = 768×14²) → GAP →
-domain head`.  The shared backbone comes in the same three families as the
-DS models (`--family`): `resnet` (width C/4 baseline), `wide` (width C/2 +
-dropout, pre-activation), `resnext` (width C/3, grouped 3×3).  Two modes: `provable` (hard spectral constraints, i-ResNet
-style, Lip(αF) ≤ ρ < 1 → invertible blocks, no norm layers / adapters) and
-`performance` (domain-specific BatchNorm + adapters + soft spectral
-penalty).  Loss: Σ CE + λ_geo·(distance-ratio hinge on u₀) + λ_lip·(spectral
-penalty above ρ).
-
-```bash
-python train_isolift.py --family resnet --mode performance
-python train_isolift.py --mode provable --lambda-lip 0
-python test_isolift.py    # isometry / dimension / Lip<ρ smoke test
-```
-
-Outputs: `isolift_{family}_{mode}.pt`, `Result/isolift_{family}_{mode}_metrics.npy`.
-
-**Stability / entropy analysis on IsoLift** — train block-wise probes on the
-frozen backbone, then run the existing analysis with the IsoLift tag:
-
-```bash
-# run all data and models
-python run_isolift_analysis.py --families resnet,wide,resnext \
-    --modes performance,provable --tag-suffix _50 --space logit
-
-# run one data and model
-python extract_isolift.py --family resnet --mode performance --tag-suffix _50
-python dist_calc.py    --model isolift_resnet_performance_50 --data MNIST --space logit --device cuda
-python entropy_calc.py --model isolift_resnet_performance_50 --data MNIST --space logit --device cuda
-python lip_curve.py    --families resnet --depths 50 --modes performance,provable
-```
-
-`extract_isolift.py` writes `prob_fc/{data}/isolift_{family}_{mode}/`,
-labels, and a `*_multifc.pt` probe checkpoint (block count is inferred from
-the saved files, so `dist_calc`/`entropy_calc` accept the tag directly).
-
-### Training
-
-Standard configurations (`--layers` sets the depth, `--tag-suffix` names it):
-
-```bash
-# T=16 (ResNet-50 type), three families, unconstrained
+# Lipschitz-unconstrained
 python train_isolift.py --family resnet  --layers 3,4,6,3 --tag-suffix _50 --mode performance
 python train_isolift.py --family wide    --layers 3,4,6,3 --tag-suffix _50 --mode performance
 python train_isolift.py --family resnext --layers 3,4,6,3 --tag-suffix _50 --mode performance \
     --width-ratio 2 --cardinality 32
 
-# T=33 (ResNet-101 type)
-python train_isolift.py --family resnet --layers 3,4,23,3 --tag-suffix _101 --mode performance
-
-# Lipschitz-constrained (provable) variants
-python train_isolift.py --family resnet --layers 3,4,6,3 --tag-suffix _50 \
-    --mode provable --lambda-lip 0
+# Lipschitz-constrained
+python train_isolift.py --family resnet  --layers 3,4,6,3 --tag-suffix _50 --mode provable --lambda-lip 0
+python train_isolift.py --family wide    --layers 3,4,6,3 --tag-suffix _50 --mode provable --lambda-lip 0
+python train_isolift.py --family resnext --layers 3,4,6,3 --tag-suffix _50 --mode provable \
+    --width-ratio 2 --cardinality 32 --lambda-lip 0
 ```
 
-The checkpoint tag is `isolift_{family}_{mode}{tag_suffix}` — e.g.
-`isolift_resnet_performance_50`. **Every downstream script takes this tag**,
-so the suffix must match across training, extraction and analysis.
-
-
-## Utilities
+#### \(T=33\): ResNet-101-type models
 
 ```bash
-# Architecture comparison + Clipper isometry check (no GPU required)
-python test_arch_compare.py
+# Lipschitz-unconstrained
+python train_isolift.py --family resnet  --layers 3,4,23,3 --tag-suffix _101 --mode performance
+python train_isolift.py --family wide    --layers 3,4,23,3 --tag-suffix _101 --mode performance
+python train_isolift.py --family resnext --layers 3,4,23,3 --tag-suffix _101 --mode performance \
+    --width-ratio 2 --cardinality 32
 
-# End-to-end smoke test of the analysis modules (no training required)
-python test_pipeline.py
+# Lipschitz-constrained
+python train_isolift.py --family resnet  --layers 3,4,23,3 --tag-suffix _101 --mode provable --lambda-lip 0
+python train_isolift.py --family wide    --layers 3,4,23,3 --tag-suffix _101 --mode provable --lambda-lip 0
+python train_isolift.py --family resnext --layers 3,4,23,3 --tag-suffix _101 --mode provable \
+    --width-ratio 2 --cardinality 32 --lambda-lip 0
 ```
 
-## Code Map
+### 2. Extract block-wise observations
 
-```
-models/ResNets.py      dimension-preserving ResNet skeleton (Clipper = isometric reshape)
-models/blocks.py       WideBottleneck / ResNeXtBottleneck (φ: R^n → R^n variants)
-models/models.py       DS_MODELS registry + build_ds_model()
-utils/trajectory.py    (N, T, D) trajectory loader in the d_g space
-utils/expansive.py     g-expansive constant (min-max, vectorised torch.cdist)
-utils/shadowing.py     pseudo-orbits, true-orbit tracing, Sh_g estimator
-utils/entropy.py       FTTE: separated sets, h_T, Δh_T, Prop.1 diagnostics
-utils/lipschitz.py     Lip(g) from checkpoint state_dict (spectral norms)
-utils/orbit_analysis.py  example selection for inspect/print scripts
-utils/stubs.py         data loading, train/evaluate, block-output extraction
-lip_curve.py           block-wise Lip(g_t) curves from probe checkpoints
+The backbone is frozen and a dataset-specific linear probe is trained after
+each residual block.
+
+```bash
+python extract_isolift.py --family resnet --mode performance --tag-suffix _50
 ```
 
-## Output Structure
+The extraction step writes block-wise observations under `prob_fc/`, test
+labels, and a `*_multifc.pt` probe checkpoint. Downstream scripts infer the
+block count from the saved files, so the same checkpoint tag must be used
+throughout training, extraction, and analysis.
 
+### 3. Compute \(\varepsilon_g\), \(Sh_g\), \(\mathrm{Lip}(G)\), and \(B_g\)
+
+```bash
+python dist_calc.py \
+    --model isolift_resnet_performance_50 \
+    --data MNIST \
+    --space logit \
+    --device cuda
 ```
-prob/          raw per-block features   (N, 200704) per block
-prob_fc/       per-block fc logits      (N, n_class) per block
+
+The empirical \(g\)-expansive constant is computed as
+
+\[
+\varepsilon_g
+=
+\min_{y_i\ne y_j}
+\max_t
+\|g_t(x_t^{(i)})-g_t(x_t^{(j)})\|_2.
+\]
+
+The shadowing estimator constructs depth-consistent pseudo-orbits and
+compares them with true trajectories in the same observation space.
+
+For logit-space linear probes, the spectral norm of the linear weight gives
+the exact Lipschitz constant with respect to the pooled representation. If
+softmax or global average pooling is included explicitly in a different
+analysis mode, the reported composition value is an upper bound rather than
+an exact global constant.
+
+The exact \(T_g\) is not computed. The reported certificate is
+
+\[
+B_g=\frac{Sh_g}{\mathrm{Lip}(G)}.
+\]
+
+Some output filenames retain legacy terminology, including
+`*_theorem.npy`; these files store the theorem-based certificate rather than
+the unknown exact stability constant.
+
+### 4. Compute FTTE
+
+```bash
+python entropy_calc.py \
+    --model isolift_resnet_performance_50 \
+    --data MNIST \
+    --space logit \
+    --device cuda
+```
+
+For an observation scale \(\varepsilon\), the script constructs a greedy
+maximal \((T,\varepsilon)\)-separated set. Its size
+
+\[
+\widehat{s}_T(\varepsilon)
+\]
+
+is a lower bound on the exact packing number \(s_T(\varepsilon)\). The
+reported empirical FTTE is therefore based on \(\widehat{s}_T\):
+
+\[
+\widehat{h}_T(\varepsilon)
+=
+\frac{1}{T}\log \widehat{s}_T(\varepsilon).
+\]
+
+The script also reports:
+
+- `intra_max`: largest within-class trajectory distance;
+- `cross_min`: smallest different-label trajectory distance, equal to the
+  empirical \(g\)-expansive constant;
+- the candidate class-scale interval `[intra_max, cross_min)` when it is
+  nonempty;
+- the empirical entropy gap relative to \(m\) class labels.
+
+A value \(\widehat{s}_T(\varepsilon)=m\) indicates that the greedy packing
+contains \(m\) visible trajectory patterns. It does not by itself prove a
+one-to-one match between those patterns and the \(m\) classes.
+
+### 5. Plot block-wise observation sensitivity
+
+```bash
+python lip_curve.py \
+    --families resnet,wide,resnext \
+    --depths 50,101 \
+    --modes performance,provable \
+    --space logit
+```
+
+The script plots
+
+\[
+t\mapsto \mathrm{Lip}(g_t)
+\]
+
+and summarizes the maximum, mean, standard deviation, peak ratio, and peak
+block. In the paper terminology, solid `performance` curves correspond to
+Lipschitz-unconstrained configurations and dashed `provable` curves
+correspond to Lipschitz-constrained configurations.
+
+### 6. Run the full IsoLift analysis
+
+```bash
+python run_isolift_analysis.py \
+    --families resnet,wide,resnext \
+    --modes performance,provable \
+    --tag-suffix _50 \
+    --space logit
+```
+
+Run the command again with `--tag-suffix _101` for \(T=33\).
+
+## Example visualization
+
+To save the pair that attains the empirical \(g\)-expansive constant:
+
+```bash
+python save_expansive_pair.py \
+    --model isolift_resnet_performance_50 \
+    --data MNIST
+```
+
+This pair consists of samples with different labels and realizes the weakest
+finite-depth trajectory separation.
+
+The script `inspect_examples.py` also contains a legacy same-label analysis.
+Those examples should be described as **within-class fragmentation** or
+**large within-class trajectory variation**, not as \(g\)-expansive pairs.
+
+## Main outputs
+
+```text
+prob_fc/       block-wise probe outputs
 pix/           test labels
-task2/         SeqInfo, MaxList, ClassInfo, TraceEps (pseudo-orbit chains)
-Result/        metrics, epsilon, shadowing, theorem, entropy, inspect PNGs
+Result/        metrics, expansive constants, shadowing estimates,
+               stability certificates, FTTE results, curves, and figures
 ```
+
+Common outputs include:
+
+```text
+Result/{data}_{model}_metrics.npy
+Result/{data}_{model}_epsilon.npy
+Result/{data}_{model}_shadowing.npy
+Result/{data}_{model}_theorem.npy     # legacy filename for the certificate
+Result/{data}_{model}_entropy.npy
+Result/lip_curves/
+```
+
+## Scope and interpretation
+
+- The theoretical appendix uses an autonomous self-map and a theoretical
+  observation map \(g\). The code evaluates finite-depth empirical
+  quantities along the actual sequence of trained residual blocks with
+  block-wise maps \(G=\{g_t\}\).
+- \(B_g\) is a lower bound, not the exact topological stability constant.
+- Raw \(\varepsilon_g\) and \(\mathrm{Lip}(G)\) depend on probe scale.
+- The greedy FTTE packing is a lower bound on the exact packing number.
+- The constrained and unconstrained model configurations differ in more than
+  the hard spectral constraint.
