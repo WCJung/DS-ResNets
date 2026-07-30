@@ -323,11 +323,3 @@ Result/lip_curves/
 - The reported $s_g^T(\varepsilon)$ is obtained by greedy packing and is an empirical lower bound on the exact maximum separated-set cardinality.
 - The constrained and unconstrained model configurations differ in more than
   the hard spectral constraint.
-
-## Legacy and developer documentation
-
-The original single-dataset DS-ResNet pipeline is retained for historical and
-comparison purposes:
-
-- [Legacy DS-ResNet pipeline](LEGACY.md)
-- [Developer notes and experimental features](DEVELOPER.md)
