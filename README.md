@@ -1,15 +1,26 @@
 # DS-ResNets
 
-The theory of Dynamical Systems for ResNets (DS-ResNets) — quantifying the
-**topological stability** (g-expansivity, g-shadowing, topological
-g-stability) and **topological entropy** (FTTE) of trained ResNets on
-dimension-preserving ResNet variants.
+Quantifying the **topological stability** (g-expansivity, g-shadowing,
+topological g-stability) and **topological entropy** (FTTE) of trained
+ResNets, viewed as finite-time discrete dynamical systems.
 
 All quantities are computed in the pseudometric
 **d_g(x, y) = d(g(x), g(y))** — the observation space of the block-wise
 classifiers g — matching the definitions in the paper.
 
-### Dimension-preserving models
+The repository contains two architecture lines, both dimension-preserving:
+
+| Line | Phase space | Datasets | Role |
+|---|---|---|---|
+| **IsoLift** (`models/isolift.py`) | ℝ^150,528 from the **raw input**, via exact isometric lifts | MNIST + CIFAR-10 + Imagenette **jointly** | **current main line** — all reported results |
+| DS-ResNets (`models/ResNets.py`) | ℝ^200,704 **after the stem** | one dataset at a time | original single-dataset formulation |
+
+IsoLift is the architecture used for the experiments in the paper: because
+each dataset enters through an exact isometry, constants measured on
+different datasets are expressed in the same units and can be compared
+directly. See [IsoLift](#isolift--multi-dataset-common-state-models) below.
+
+### DS-ResNets — single-dataset models
 
 Every residual block acts on a common phase space (flattened dim 200,704 —
 the Clipper reshapes are coordinate permutations, hence l2-isometries).
@@ -18,11 +29,13 @@ The block *interior* is free; three families are provided:
 | Name | Block | Idea |
 |---|---|---|
 | `ds_resnet18` / `ds_resnet50` | `Bottleneck` | grouped bottleneck (baseline) |
-| `ds_wide18` / `ds_wide50` | `WideBottleneck` | Wide-ResNet: 2× bottleneck width + dropout, **pre-activation** (`φ(x) = x + F(x)` exactly) |
+| `ds_wide18` / `ds_wide50` | `WideBottleneck` | Wide-ResNet: 2× bottleneck width + dropout, **pre-activation** |
 | `ds_resnext18` / `ds_resnext50` | `ResNeXtBottleneck` | ResNeXt: cardinality-32 aggregated transforms |
 
 `*18` = 8 blocks, `*50` = 16 blocks. The registry lives in
 `models/models.py` (`DS_MODELS`).
+
+
 
 ## Install
 
@@ -187,6 +200,19 @@ python run_all.py
 python print_results.py
 ```
 
+## IsoLift — multi-dataset common-state models
+
+The architecture used for the results in the paper (`models/isolift.py`).
+Instead of sharing the post-stem space, each dataset's **raw input** is
+lifted isometrically into one common state space ℝ^{48×56×56}
+(= 3·224·224 = 150,528), and stage transitions are `PixelUnshuffle(2)`
+coordinate permutations rather than strided convolutions:
+
+    48×56² = 192×28² = 768×14² = 3072×7² = 150,528
+
+so every residual block is a self-map of a single metric space, and
+distances anywhere in the network equal distances between raw inputs.
+
 ## IsoLift-ResNeXt — multi-dataset common-state model (experimental)
 
 A second architecture family (`models/isolift.py`): instead of sharing the
@@ -209,7 +235,7 @@ Heads are sized per domain automatically (`DOMAIN_CLASSES`).
 python train_isolift.py --family resnext --datasets MNIST,CIFAR10,IMAGENET1K \
     --imagenet-root /path/to/imagenet
 python run_isolift_analysis.py --families resnext --n-samples 10000 \
-    --imagenet-root /path/to/imagenet     # val 5만 장 분석은 서브샘플 권장
+    --imagenet-root /path/to/imagenet     
 ```
 
 Pipeline: `x_d → E_d → A_d (domain adapter) → shared backbone
@@ -234,18 +260,44 @@ Outputs: `isolift_{family}_{mode}.pt`, `Result/isolift_{family}_{mode}_metrics.n
 frozen backbone, then run the existing analysis with the IsoLift tag:
 
 ```bash
-# 일괄 실행 (추출이 안 됐으면 자동 추출 후, 모든 도메인 분석 + 요약 표)
-python run_isolift_analysis.py --families resnet,wide,resnext --modes performance
+# run all data and models
+python run_isolift_analysis.py --families resnet,wide,resnext \
+    --modes performance,provable --tag-suffix _50 --space logit
 
-# 또는 단계별로
-python extract_isolift.py --family resnet --mode performance
-python dist_calc.py    --model isolift_resnet_performance --data MNIST --space logit --device cuda
-python entropy_calc.py --model isolift_resnet_performance --data MNIST --space logit --device cuda
+# run one data and model
+python extract_isolift.py --family resnet --mode performance --tag-suffix _50
+python dist_calc.py    --model isolift_resnet_performance_50 --data MNIST --space logit --device cuda
+python entropy_calc.py --model isolift_resnet_performance_50 --data MNIST --space logit --device cuda
+python lip_curve.py    --families resnet --depths 50 --modes performance,provable
 ```
 
 `extract_isolift.py` writes `prob_fc/{data}/isolift_{family}_{mode}/`,
 labels, and a `*_multifc.pt` probe checkpoint (block count is inferred from
 the saved files, so `dist_calc`/`entropy_calc` accept the tag directly).
+
+### Training
+
+Standard configurations (`--layers` sets the depth, `--tag-suffix` names it):
+
+```bash
+# T=16 (ResNet-50 type), three families, unconstrained
+python train_isolift.py --family resnet  --layers 3,4,6,3 --tag-suffix _50 --mode performance
+python train_isolift.py --family wide    --layers 3,4,6,3 --tag-suffix _50 --mode performance
+python train_isolift.py --family resnext --layers 3,4,6,3 --tag-suffix _50 --mode performance \
+    --width-ratio 2 --cardinality 32
+
+# T=33 (ResNet-101 type)
+python train_isolift.py --family resnet --layers 3,4,23,3 --tag-suffix _101 --mode performance
+
+# Lipschitz-constrained (provable) variants
+python train_isolift.py --family resnet --layers 3,4,6,3 --tag-suffix _50 \
+    --mode provable --lambda-lip 0
+```
+
+The checkpoint tag is `isolift_{family}_{mode}{tag_suffix}` — e.g.
+`isolift_resnet_performance_50`. **Every downstream script takes this tag**,
+so the suffix must match across training, extraction and analysis.
+
 
 ## Utilities
 
