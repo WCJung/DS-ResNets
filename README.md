@@ -8,40 +8,45 @@ The main experiments use **IsoLift-ResNet**, **IsoLift-Wide ResNet**, and
 isometric input lifts and dimension-preserving stage transitions place all
 representations in a common ambient Euclidean state space.
 
+> **Markdown rendering:** Mathematical expressions use GitHub-compatible `$...$` and `$$...$$` delimiters.
+
 ## What the repository estimates
 
-For a trained network, let \(x_t\) be the representation after residual block
-\(t\), and let \(g_t\) be the linear observation map attached to that block.
+For a trained network, let $x_t$ be the representation after residual block
+$t$, and let $g_t$ be the linear observation map attached to that block.
 The empirical analysis uses the block-wise observation family
 
-$G=\{g_t\}_{t=0}^{T-1}$
+$$
+G=\{g_t\}_{t=0}^{T-1}
+$$
 
 and the finite-depth trajectory distance
 
-$d_G^T(x,y)$
+$$
+d_G^T(x,y)
 =
 \max_{0\le t<T}
 \|g_t(x_t)-g_t(y_t)\|_2.
-$
+$$
 
 The repository estimates:
 
-- the empirical \(g\)-expansive constant \(\varepsilon_g\), which identifies
+- the empirical $g$-expansive constant $\varepsilon_g$, which identifies
   the weakest separation between samples with different labels;
-- the empirical \(g\)-shadowing constant \(Sh_g\);
+- the empirical $g$-shadowing constant $Sh_g$;
 - the observation sensitivity
-  \[
-  \mathrm{Lip}(G)=\max_t\mathrm{Lip}(g_t);
-  \]
+$$
+\mathrm{Lip}(G)=\max_t\mathrm{Lip}(g_t);
+$$
 - the certified stability lower bound
-  \[
-  B_g=\frac{Sh_g}{\mathrm{Lip}(G)}\le T_g;
-  \]
+$$
+B_g=\frac{Sh_g}{\mathrm{Lip}(G)}\le T_g;
+$$
 - finite-time trajectory entropy (FTTE), estimated by greedy separated-set
   packing.
 
-The exact topological \(g\)-stability constant \(T_g\) is **not** computed.
-The code reports the theorem-based lower bound \(B_g\).
+The exact topological $g$-stability constant $T_g$ is **not** computed.
+The code reports the theorem-based lower bound $B_g$.
 
 The paper reports the main IsoLift results in **logit space**. Use
 `--space logit` when reproducing the reported tables and figures.
@@ -61,12 +66,12 @@ bound is enforced; a soft spectral penalty may still be used.
 ## IsoLift architecture
 
 Each dataset is mapped by a fixed, non-trainable lift
-\(E_d:\mathcal X_d\to\mathbb R^{48\times56\times56}\).
+$E_d:\mathcal X_d\to\mathbb R^{48\times56\times56}$.
 
-| Dataset | Fixed lift \(E_d\) |
+| Dataset | Fixed lift $E_d$ |
 |---|---|
-| MNIST | center zero-embedding into \(56\times56\), followed by a unit-norm \(1\to48\) channel lift |
-| CIFAR-10 | center zero-padding into \(56\times56\), followed by a semi-orthogonal \(1\times1\) channel lift |
+| MNIST | center zero-embedding into $56\times56$, followed by a unit-norm $1\to48$ channel lift |
+| CIFAR-10 | center zero-padding into $56\times56$, followed by a semi-orthogonal $1\times1$ channel lift |
 | Imagenette | `PixelUnshuffle(4)`, a coordinate permutation |
 
 The fixed lifts preserve within-dataset Euclidean distances exactly at the
@@ -87,9 +92,9 @@ applied after the fixed lift. The complete entry map is therefore not
 necessarily isometric; its distortion is controlled empirically by the
 geometry loss.
 
-Raw observation-space quantities such as \(\varepsilon_g\) remain dependent
+Raw observation-space quantities such as $\varepsilon_g$ remain dependent
 on the scale of the learned probes. They should be interpreted together with
-\(\mathrm{Lip}(G)\) or a scale-normalized quantity.
+$\mathrm{Lip}(G)$ or a scale-normalized quantity.
 
 ### Model families
 
@@ -101,8 +106,8 @@ on the scale of the learned probes. They should be interpreted together with
 
 The paper evaluates each family at:
 
-- \(T=16\): ResNet-50-type stage configuration `[3,4,6,3]`;
-- \(T=33\): ResNet-101-type stage configuration `[3,4,23,3]`.
+- $T=16$: ResNet-50-type stage configuration `[3,4,6,3]`;
+- $T=33$: ResNet-101-type stage configuration `[3,4,23,3]`.
 
 Within each training configuration, the architecture families share the same
 fixed lifts, state dimensions, stage transitions, block counts, and
@@ -131,7 +136,7 @@ isolift_{family}_{mode}{tag_suffix}
 For example, `isolift_resnet_performance_50` denotes the
 Lipschitz-unconstrained IsoLift-ResNet-50 configuration.
 
-#### \(T=16\): ResNet-50-type models
+#### $T=16$: ResNet-50-type models
 
 ```bash
 # Lipschitz-unconstrained
@@ -147,7 +152,7 @@ python train_isolift.py --family resnext --layers 3,4,6,3 --tag-suffix _50 --mod
     --width-ratio 2 --cardinality 32 --lambda-lip 0
 ```
 
-#### \(T=33\): ResNet-101-type models
+#### $T=33$: ResNet-101-type models
 
 ```bash
 # Lipschitz-unconstrained
@@ -177,7 +182,7 @@ labels, and a `*_multifc.pt` probe checkpoint. Downstream scripts infer the
 block count from the saved files, so the same checkpoint tag must be used
 throughout training, extraction, and analysis.
 
-### 3. Compute \(\varepsilon_g\), \(Sh_g\), \(\mathrm{Lip}(G)\), and \(B_g\)
+### 3. Compute $\varepsilon_g$, $Sh_g$, $\mathrm{Lip}(G)$, and $B_g$
 
 ```bash
 python dist_calc.py \
@@ -187,15 +192,15 @@ python dist_calc.py \
     --device cuda
 ```
 
-The empirical \(g\)-expansive constant is computed as
+The empirical $g$-expansive constant is computed as
 
-\[
+$$
 \varepsilon_g
 =
 \min_{y_i\ne y_j}
 \max_t
 \|g_t(x_t^{(i)})-g_t(x_t^{(j)})\|_2.
-\]
+$$
 
 The shadowing estimator constructs depth-consistent pseudo-orbits and
 compares them with true trajectories in the same observation space.
@@ -206,11 +211,11 @@ softmax or global average pooling is included explicitly in a different
 analysis mode, the reported composition value is an upper bound rather than
 an exact global constant.
 
-The exact \(T_g\) is not computed. The reported certificate is
+The exact $T_g$ is not computed. The reported certificate is
 
-\[
+$$
 B_g=\frac{Sh_g}{\mathrm{Lip}(G)}.
-\]
+$$
 
 Some output filenames retain legacy terminology, including
 `*_theorem.npy`; these files store the theorem-based certificate rather than
@@ -226,34 +231,34 @@ python entropy_calc.py \
     --device cuda
 ```
 
-For an observation scale \(\varepsilon\), the script constructs a greedy
-maximal \((T,\varepsilon)\)-separated set. Its size
+For an observation scale $\varepsilon$, the script constructs a greedy
+maximal $(T,\varepsilon)$-separated set. Its size
 
-\[
+$$
 \widehat{s}_T(\varepsilon)
-\]
+$$
 
-is a lower bound on the exact packing number \(s_T(\varepsilon)\). The
-reported empirical FTTE is therefore based on \(\widehat{s}_T\):
+is a lower bound on the exact packing number $s_T(\varepsilon)$. The
+reported empirical FTTE is therefore based on $\widehat{s}_T$:
 
-\[
+$$
 \widehat{h}_T(\varepsilon)
 =
 \frac{1}{T}\log \widehat{s}_T(\varepsilon).
-\]
+$$
 
 The script also reports:
 
 - `intra_max`: largest within-class trajectory distance;
 - `cross_min`: smallest different-label trajectory distance, equal to the
-  empirical \(g\)-expansive constant;
+  empirical $g$-expansive constant;
 - the candidate class-scale interval `[intra_max, cross_min)` when it is
   nonempty;
-- the empirical entropy gap relative to \(m\) class labels.
+- the empirical entropy gap relative to $m$ class labels.
 
-A value \(\widehat{s}_T(\varepsilon)=m\) indicates that the greedy packing
-contains \(m\) visible trajectory patterns. It does not by itself prove a
-one-to-one match between those patterns and the \(m\) classes.
+A value $\widehat{s}_T(\varepsilon)=m$ indicates that the greedy packing
+contains $m$ visible trajectory patterns. It does not by itself prove a
+one-to-one match between those patterns and the $m$ classes.
 
 ### 5. Plot block-wise observation sensitivity
 
@@ -267,9 +272,9 @@ python lip_curve.py \
 
 The script plots
 
-\[
+$$
 t\mapsto \mathrm{Lip}(g_t)
-\]
+$$
 
 and summarizes the maximum, mean, standard deviation, peak ratio, and peak
 block. In the paper terminology, solid `performance` curves correspond to
@@ -286,11 +291,11 @@ python run_isolift_analysis.py \
     --space logit
 ```
 
-Run the command again with `--tag-suffix _101` for \(T=33\).
+Run the command again with `--tag-suffix _101` for $T=33$.
 
 ## Example visualization
 
-To save the pair that attains the empirical \(g\)-expansive constant:
+To save the pair that attains the empirical $g$-expansive constant:
 
 ```bash
 python save_expansive_pair.py \
@@ -303,7 +308,7 @@ finite-depth trajectory separation.
 
 The script `inspect_examples.py` also contains a legacy same-label analysis.
 Those examples should be described as **within-class fragmentation** or
-**large within-class trajectory variation**, not as \(g\)-expansive pairs.
+**large within-class trajectory variation**, not as $g$-expansive pairs.
 
 ## Main outputs
 
@@ -328,11 +333,19 @@ Result/lip_curves/
 ## Scope and interpretation
 
 - The theoretical appendix uses an autonomous self-map and a theoretical
-  observation map \(g\). The code evaluates finite-depth empirical
+  observation map $g$. The code evaluates finite-depth empirical
   quantities along the actual sequence of trained residual blocks with
-  block-wise maps \(G=\{g_t\}\).
-- \(B_g\) is a lower bound, not the exact topological stability constant.
-- Raw \(\varepsilon_g\) and \(\mathrm{Lip}(G)\) depend on probe scale.
+  block-wise maps $G=\{g_t\}$.
+- $B_g$ is a lower bound, not the exact topological stability constant.
+- Raw $\varepsilon_g$ and $\mathrm{Lip}(G)$ depend on probe scale.
 - The greedy FTTE packing is a lower bound on the exact packing number.
 - The constrained and unconstrained model configurations differ in more than
   the hard spectral constraint.
+
+## Legacy and developer documentation
+
+The original single-dataset DS-ResNet pipeline is retained for historical and
+comparison purposes:
+
+- [Legacy DS-ResNet pipeline](LEGACY.md)
+- [Developer notes and experimental features](DEVELOPER.md)
