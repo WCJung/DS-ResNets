@@ -8,6 +8,8 @@ The main experiments use **IsoLift-ResNet**, **IsoLift-Wide ResNet**, and
 isometric input lifts and dimension-preserving stage transitions place all
 representations in a common ambient Euclidean state space.
 
+> **Markdown rendering:** Inline expressions use `$...$`; display equations use fenced `math` blocks for reliable GitHub rendering.
+
 ## What the repository estimates
 
 For a trained network, let $x_t$ be the representation after residual block
@@ -19,9 +21,7 @@ G=\{g_t\}_{t=0}^{T-1}
 ```
 and the finite-depth trajectory distance
 
-```math
-d_G^T(x,y) = \max_{0<t<T} \|g_t(x_t)-g_t(y_t)\|_2.
-```
+$$d_G^T(x,y)=\max_{0\le t<T}\|g_t(x_t)-g_t(y_t)\|_2.$$
 The repository estimates:
 
 - the empirical $g$-expansive constant $\varepsilon_g$, which identifies
@@ -223,19 +223,13 @@ python entropy_calc.py \
 ```
 
 For an observation scale $\varepsilon$, the script constructs a greedy
-maximal $(T,\varepsilon)$-separated set. Its size
+maximal $(T,\varepsilon)$-separated set and reports its cardinality as
+$s_g^T(\varepsilon)$. Because the set is obtained greedily, this reported
+value is an empirical lower bound on the exact maximum separated-set
+cardinality. The corresponding FTTE is
 
-```math
-\widehat{s}_T(\varepsilon)
-```
-is a lower bound on the exact packing number $s_T(\varepsilon)$. The
-reported empirical FTTE is therefore based on $\widehat{s}_T$:
+$$h_g^T(\varepsilon)=\frac{1}{T}\log s_g^T(\varepsilon).$$
 
-```math
-\widehat{h}_T(\varepsilon)
-=
-\frac{1}{T}\log \widehat{s}_T(\varepsilon).
-```
 The script also reports:
 
 - `intra_max`: largest within-class trajectory distance;
@@ -245,7 +239,7 @@ The script also reports:
   nonempty;
 - the empirical entropy gap relative to $m$ class labels.
 
-A value $\widehat{s}_T(\varepsilon)=m$ indicates that the greedy packing
+A value $s_g^T(\varepsilon)=m$ indicates that the greedy packing
 contains $m$ visible trajectory patterns. It does not by itself prove a
 one-to-one match between those patterns and the $m$ classes.
 
@@ -326,9 +320,14 @@ Result/lip_curves/
   block-wise maps $G=\{g_t\}$.
 - $B_g$ is a lower bound, not the exact topological stability constant.
 - Raw $\varepsilon_g$ and $\mathrm{Lip}(G)$ depend on probe scale.
-- The greedy FTTE packing is a lower bound on the exact packing number.
+- The reported $s_g^T(\varepsilon)$ is obtained by greedy packing and is an empirical lower bound on the exact maximum separated-set cardinality.
 - The constrained and unconstrained model configurations differ in more than
   the hard spectral constraint.
+
+## Legacy and developer documentation
+
+The original single-dataset DS-ResNet pipeline is retained for historical and
+comparison purposes:
 
 - [Legacy DS-ResNet pipeline](LEGACY.md)
 - [Developer notes and experimental features](DEVELOPER.md)
