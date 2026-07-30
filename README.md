@@ -8,38 +8,36 @@ The main experiments use **IsoLift-ResNet**, **IsoLift-Wide ResNet**, and
 isometric input lifts and dimension-preserving stage transitions place all
 representations in a common ambient Euclidean state space.
 
-> **Markdown rendering:** Mathematical expressions use GitHub-compatible `$...$` and `$$...$$` delimiters.
-
 ## What the repository estimates
 
 For a trained network, let $x_t$ be the representation after residual block
 $t$, and let $g_t$ be the linear observation map attached to that block.
 The empirical analysis uses the block-wise observation family
 
-$$G=\{ g_t \}_{t=0}^{T-1}$$
-
+```math
+G=\{g_t\}_{t=0}^{T-1}
+```
 and the finite-depth trajectory distance
 
-$$
+```math
 d_G^T(x,y)
 =
 \max_{0\le t<T}
 \|g_t(x_t)-g_t(y_t)\|_2.
-$$
-
+```
 The repository estimates:
 
 - the empirical $g$-expansive constant $\varepsilon_g$, which identifies
   the weakest separation between samples with different labels;
 - the empirical $g$-shadowing constant $Sh_g$;
 - the observation sensitivity
-$$
+```math
 \mathrm{Lip}(G)=\max_t\mathrm{Lip}(g_t);
-$$
+```
 - the certified stability lower bound
-$$
+```math
 B_g=\frac{Sh_g}{\mathrm{Lip}(G)}\le T_g;
-$$
+```
 - finite-time trajectory entropy (FTTE), estimated by greedy separated-set
   packing.
 
@@ -192,14 +190,13 @@ python dist_calc.py \
 
 The empirical $g$-expansive constant is computed as
 
-$$
+```math
 \varepsilon_g
 =
 \min_{y_i\ne y_j}
 \max_t
 \|g_t(x_t^{(i)})-g_t(x_t^{(j)})\|_2.
-$$
-
+```
 The shadowing estimator constructs depth-consistent pseudo-orbits and
 compares them with true trajectories in the same observation space.
 
@@ -211,10 +208,9 @@ an exact global constant.
 
 The exact $T_g$ is not computed. The reported certificate is
 
-$$
+```math
 B_g=\frac{Sh_g}{\mathrm{Lip}(G)}.
-$$
-
+```
 Some output filenames retain legacy terminology, including
 `*_theorem.npy`; these files store the theorem-based certificate rather than
 the unknown exact stability constant.
@@ -232,19 +228,17 @@ python entropy_calc.py \
 For an observation scale $\varepsilon$, the script constructs a greedy
 maximal $(T,\varepsilon)$-separated set. Its size
 
-$$
+```math
 \widehat{s}_T(\varepsilon)
-$$
-
+```
 is a lower bound on the exact packing number $s_T(\varepsilon)$. The
 reported empirical FTTE is therefore based on $\widehat{s}_T$:
 
-$$
+```math
 \widehat{h}_T(\varepsilon)
 =
 \frac{1}{T}\log \widehat{s}_T(\varepsilon).
-$$
-
+```
 The script also reports:
 
 - `intra_max`: largest within-class trajectory distance;
@@ -270,10 +264,9 @@ python lip_curve.py \
 
 The script plots
 
-$$
+```math
 t\mapsto \mathrm{Lip}(g_t)
-$$
-
+```
 and summarizes the maximum, mean, standard deviation, peak ratio, and peak
 block. In the paper terminology, solid `performance` curves correspond to
 Lipschitz-unconstrained configurations and dashed `provable` curves
@@ -339,11 +332,6 @@ Result/lip_curves/
 - The greedy FTTE packing is a lower bound on the exact packing number.
 - The constrained and unconstrained model configurations differ in more than
   the hard spectral constraint.
-
-## Legacy and developer documentation
-
-The original single-dataset DS-ResNet pipeline is retained for historical and
-comparison purposes:
 
 - [Legacy DS-ResNet pipeline](LEGACY.md)
 - [Developer notes and experimental features](DEVELOPER.md)
