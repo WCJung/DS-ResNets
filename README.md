@@ -131,8 +131,34 @@ python entropy_calc.py --model ds_wide50 --data CIFAR10 --device cuda
 Outputs: `Result/{data}_{model}_entropy.npy`.
 
 ---
+### 4. Lipschitz Curve — `lip_curve.py`
 
-### 4. Inspect Examples — `inspect_examples.py`
+Plots the block-wise observation gain `t -> Lip(g_t)` from the probe
+checkpoints alone (no retraining, no re-extraction). The maximum of the
+curve equals the `Lip(g)` reported by `dist_calc.py`, which the script
+asserts internally.
+
+```bash
+python lip_curve.py                                    # ResNet-50, both modes
+python lip_curve.py --families resnet,wide,resnext \
+    --depths 50,101 --modes performance,provable       # all 12 tags
+python lip_curve.py --models isolift_wide_provable_50  # explicit tags
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--models` | none | comma-separated tags; overrides `--families/--depths/--modes` |
+| `--datasets` | `CIFAR10,IMAGENET10,MNIST` | comma-separated |
+| `--space` | `logit` | must match `dist_calc.py` |
+| `--families` / `--depths` / `--modes` | `resnet` / `50` / both | combination builder |
+| `--out-dir` | `Result/lip_curves` | output directory |
+
+Outputs: `{data}_{model}_lip_curve.npy` (block_lip, L_max, L_mean, L_std,
+R_peak, argmax_block), `lip_curve_summary.csv`, and
+`{data}_lip_curve.png/.pdf` (performance solid, provable dashed).
+
+
+### 5. Inspect Examples — `inspect_examples.py`
 
 Selects and visualises concrete instability examples:
 
@@ -244,6 +270,7 @@ utils/entropy.py       FTTE: separated sets, h_T, Δh_T, Prop.1 diagnostics
 utils/lipschitz.py     Lip(g) from checkpoint state_dict (spectral norms)
 utils/orbit_analysis.py  example selection for inspect/print scripts
 utils/stubs.py         data loading, train/evaluate, block-output extraction
+lip_curve.py           block-wise Lip(g_t) curves from probe checkpoints
 ```
 
 ## Output Structure
