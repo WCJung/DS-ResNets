@@ -20,7 +20,7 @@ G=\{g_t\}_{t=0}^{T-1}
 and the finite-depth trajectory distance
 
 ```math
-d_G^T(x,y) = \max_{0\le t<T} \|g_t(x_t)-g_t(y_t)\|_2.
+d_G^T(x,y) = \max_{0<t<T} \|g_t(x_t)-g_t(y_t)\|_2.
 ```
 The repository estimates:
 
